@@ -1,0 +1,42 @@
+electro_shop/                 # Thư mục gốc của dự án
+│── assets/                   # Chứa các tài nguyên tĩnh (CSS, JS, hình ảnh)
+│   ├── css/                  # Chứa file CSS
+│   │   ├── style.css
+│   │   ├── responsive.css
+│   ├── js/                   # Chứa file JavaScript
+│   │   ├── script.js
+│   ├── images/               # Chứa hình ảnh sản phẩm, banner, logo
+│── config/                   # Chứa các file cấu hình
+│   ├── database.php          # Kết nối cơ sở dữ liệu MySQL
+│   ├── config.php            # Cấu hình chung (tên website, đường dẫn)
+│── includes/                 # Chứa các file tái sử dụng
+│   ├── header.php            # Header của trang web
+│   ├── footer.php            # Footer của trang web
+│   ├── navbar.php            # Thanh điều hướng
+│── models/                   # Chứa các file xử lý dữ liệu từ database
+│   ├── Product.php           # Model xử lý sản phẩm
+│   ├── User.php              # Model xử lý người dùng
+│   ├── Order.php             # Model xử lý đơn hàng
+│── views/                    # Chứa các file giao diện
+│   ├── home.php              # Trang chủ
+│   ├── product.php           # Trang chi tiết sản phẩm
+│   ├── cart.php              # Trang giỏ hàng
+│   ├── checkout.php          # Trang thanh toán
+│   ├── login.php             # Trang đăng nhập
+│   ├── register.php          # Trang đăng ký
+│   ├── profile.php           # Trang cá nhân
+│── admin/                    # Khu vực quản trị
+│   ├── index.php             # Trang dashboard
+│   ├── manage_products.php   # Quản lý sản phẩm
+│   ├── manage_orders.php     # Quản lý đơn hàng
+│   ├── manage_users.php      # Quản lý người dùng
+│── controllers/              # Xử lý logic nghiệp vụ
+│   ├── productController.php # Điều khiển logic sản phẩm
+│   ├── userController.php    # Điều khiển logic người dùng
+│   ├── orderController.php   # Điều khiển logic đơn hàng
+│── database/                 # Chứa file SQL để tạo bảng
+│   ├── schema.sql            # File tạo bảng CSDL
+│── uploads/                  # Thư mục chứa ảnh sản phẩm tải lên
+│── index.php                 # Trang chính
+│── .htaccess                 # Cấu hình URL Rewrite
+│── README.md                 # Hướng dẫn sử dụng

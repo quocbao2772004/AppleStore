@@ -1,0 +1,198 @@
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+body {
+    font-family: 'SF Pro Display', Arial, sans-serif;
+    background: linear-gradient(135deg, #fafafa 0%, #e5e5e5 100%);
+    color: #1d1d1f;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    min-height: 100vh;
+    margin: 0;
+}
+.login-container {
+    background-color: #fff;
+    width: 100%;
+    max-width: 400px;
+    padding: 40px;
+    border-radius: 18px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+    text-align: center;
+}
+.login-container .logo {
+    font-size: 28px;
+    font-weight: 600;
+    color: #000;
+    margin-bottom: 20px;
+}
+.login-container h2 {
+    font-size: 24px;
+    font-weight: 600;
+    margin-bottom: 20px;
+}
+.login-container .error {
+    color: #d32f2f;
+    font-size: 14px;
+    margin-bottom: 15px;
+}
+.login-container form {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+.login-container input {
+    padding: 12px 15px;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    font-size: 16px;
+    outline: none;
+    transition: border-color 0.3s;
+}
+.login-container input:focus {
+    border-color: #0071e3;
+}
+.login-container button {
+    padding: 12px;
+    background-color: #0071e3;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.3s, transform 0.2s;
+}
+.login-container button:hover {
+    background-color: #005bb5;
+    transform: translateY(-2px);
+}
+.login-container .forgot-password {
+    margin-top: 15px;
+    font-size: 14px;
+}
+.login-container .forgot-password a {
+    color: #0071e3;
+    text-decoration: none;
+    transition: color 0.3s;
+}
+.login-container .forgot-password a:hover {
+    color: #005bb5;
+    text-decoration: underline;
+}
+.login-container .register-link {
+    margin-top: 20px;
+    font-size: 14px;
+    color: #86868b;
+}
+.login-container .register-link a {
+    color: #0071e3;
+    text-decoration: none;
+    transition: color 0.3s;
+}
+.login-container .register-link a:hover {
+    color: #005bb5;
+    text-decoration: underline;
+}
+@media (max-width: 480px) {
+    .login-container {
+        padding: 20px;
+        margin: 20px;
+    }
+    .login-container h2 {
+        font-size: 20px;
+    }
+}
+.register-container {
+    background-color: #fff;
+    width: 100%;
+    max-width: 400px;
+    padding: 40px;
+    border-radius: 18px;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+    text-align: center;
+}
+
+.register-container .logo {
+    font-size: 28px;
+    font-weight: 600;
+    color: #000;
+    margin-bottom: 20px;
+}
+
+.register-container h2 {
+    font-size: 24px;
+    font-weight: 600;
+    margin-bottom: 20px;
+}
+
+.register-container .error {
+    color: #d32f2f;
+    font-size: 14px;
+    margin-bottom: 15px;
+}
+
+.register-container form {
+    display: flex;
+    flex-direction: column;
+    gap: 15px;
+}
+
+.register-container input {
+    padding: 12px 15px;
+    border: 1px solid #d2d2d7;
+    border-radius: 8px;
+    font-size: 16px;
+    outline: none;
+    transition: border-color 0.3s;
+}
+
+.register-container input:focus {
+    border-color: #0071e3;
+}
+
+.register-container button {
+    padding: 12px;
+    background-color: #0071e3;
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.3s, transform 0.2s;
+}
+
+.register-container button:hover {
+    background-color: #005bb5;
+    transform: translateY(-2px);
+}
+
+.register-container .login-link {
+    margin-top: 20px;
+    font-size: 14px;
+    color: #86868b;
+}
+
+.register-container .login-link a {
+    color: #0071e3;
+    text-decoration: none;
+    transition: color 0.3s;
+}
+
+.register-container .login-link a:hover {
+    color: #005bb5;
+    text-decoration: underline;
+}
+
+@media (max-width: 480px) {
+    .register-container {
+        padding: 20px;
+        margin: 20px;
+    }
+    .register-container h2 {
+        font-size: 20px;
+    }
+}
