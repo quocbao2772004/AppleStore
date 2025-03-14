@@ -50,5 +50,4 @@ Website bán các sản phẩm chính hãng của Apple như iPhone, MacBook, Ma
 - Deploy lên server.
 
 ---
-## 📌 Preview website: https://ttcs.toanphatnd.com/
 
