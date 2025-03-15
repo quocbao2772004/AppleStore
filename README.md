@@ -1,6 +1,9 @@
 # AppleStore
 # Kế Hoạch Dự Án Website Bán Hàng Apple Store Online
 
+# Báo cáo
+[📄 Report](https://github.com/quocbao2772004/AppleStore/blob/main/B22DCVT050_15_03_2025_1_report.pdf)
+
 ## 1. Giới Thiệu Dự Án
 Website bán các sản phẩm chính hãng của Apple như iPhone, MacBook, Mac Mini, Mac Studio. Hỗ trợ thanh toán trực tuyến, tích hợp chatbot tư vấn và xác nhận đơn hàng qua email.
 
