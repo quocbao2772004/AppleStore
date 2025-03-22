@@ -20,7 +20,7 @@ Here are the detailed weekly reports outlining the project’s progress:
   *Date: March 15, 2025*  
   Summary of initial setup, project planning, and foundational development tasks.
 
-- **[📄 Second Report](https://github.com/quocbao2772004/AppleStore/blob/main/report/B22DCVT050_21_03_2025_weekly_report.pdf)**  
+- **[📄 Second Report](https://github.com/quocbao2772004/AppleStore/blob/main/report/B22DCVT050_22_03_2025_weekly_report.pdf)**  
   *Date: March 21, 2025*  
   Progress on payment API integration, automated email system, and chatbot implementation.
 
