@@ -3,4 +3,4 @@ config/config.json
 config/config.php
 controllers/history.json
 code.zip
-controllers/send_email.json
+controllers/send_email.py
