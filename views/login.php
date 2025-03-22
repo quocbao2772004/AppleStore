@@ -19,7 +19,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $user = $stmt->fetch(PDO::FETCH_ASSOC);
 
         if ($user && password_verify($password, $user['password'])) {
-            $_SESSION['user'] = $email;
+            // Lưu user_id vào session thay vì email
+            $_SESSION['user_id'] = $user['id'];
+            // Tùy chọn: Lưu thêm thông tin khác nếu cần
+            $_SESSION['user_email'] = $user['email']; // Nếu bạn vẫn muốn giữ email
             header('Location: ../index.php');
             exit();
         } else {
@@ -50,7 +53,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         <?php endif; ?>
 
         <form method="POST" action="">
-            <input type="text" name="email" placeholder="Email hoặc số điện thoại" value="<?php echo htmlspecialchars($email); ?>" required>
+            <input type="text" name="email" placeholder="Email hoặc số điện thoại" value="<?php echo isset($email) ? htmlspecialchars($email) : ''; ?>" required>
             <input type="password" name="password" placeholder="Mật khẩu" required>
             <button type="submit">Đăng nhập</button>
         </form>

@@ -11,18 +11,21 @@ session_start();
     <link href="https://fonts.googleapis.com/css2?family=SF+Pro+Display:wght@400;600&display=swap" rel="stylesheet">
     <link rel="stylesheet" type="text/css" href="../assets/css/applestyle.css" />
     <style>
-            footer 
-            {
-            position: fixed
-            
-            }
+        footer {
+            position: fixed;
+        }
+        .success-message {
+            color: green;
+            margin-bottom: 15px;
+        }
+        .error-message {
+            color: red;
+            margin-bottom: 15px;
+        }
     </style>
 </head>
 <body>
-    <header>
-        <div class="logo">Apple Store</div>
-        <?php include '../includes/navbar.php'; ?>
-    </header>
+    <?php include '../includes/header.php'; ?>
 
     <section class="contact-page">
         <div class="contact-header">
@@ -32,7 +35,9 @@ session_start();
 
         <div class="contact-content">
             <div class="contact-form">
-                <form action="#" method="POST">
+                <div id="form-message"></div> <!-- Nơi hiển thị thông báo -->
+
+                <form id="contact-form" method="POST" action="http://127.0.0.1:5000/send-email">
                     <div class="form-group">
                         <label for="name">Họ và tên</label>
                         <input type="text" id="name" name="name" placeholder="Nhập họ và tên" required>
@@ -55,9 +60,9 @@ session_start();
 
             <div class="contact-info">
                 <h3>Thông tin liên hệ</h3>
-                <p><strong>Địa chỉ:</strong> 123 Đường Apple, Quận 1, TP. Hồ Chí Minh</p>
-                <p><strong>Email:</strong> support@applestore.vn</p>
-                <p><strong>Số điện thoại:</strong> 0909 123 456</p>
+                <p><strong>Địa chỉ:</strong> 96A Trần Phú, Hà Đông, Hà Nội</p>
+                <p><strong>Email:</strong> k100iltqbao@gmail.com</p>
+                <p><strong>Số điện thoại:</strong> 0988888888</p>
                 <p><strong>Giờ làm việc:</strong> 9:00 - 18:00, Thứ 2 - Thứ 7</p>
             </div>
         </div>
@@ -66,5 +71,32 @@ session_start();
     <footer>
         <p>© 2025 Apple Store - Mọi quyền được bảo lưu.</p>
     </footer>
+
+    <script>
+        document.getElementById('contact-form').addEventListener('submit', function(e) {
+            e.preventDefault(); // Ngăn form submit mặc định
+
+            const formData = new FormData(this);
+
+            fetch('http://localhost:5000/send-email', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                const messageDiv = document.getElementById('form-message');
+                messageDiv.innerHTML = '';
+                if (data.success) {
+                    messageDiv.innerHTML = '<p class="success-message">' + data.message + '</p>';
+                    document.getElementById('contact-form').reset(); // Xóa form sau khi gửi thành công
+                } else {
+                    messageDiv.innerHTML = '<p class="error-message">' + data.message + '</p>';
+                }
+            })
+            .catch(error => {
+                document.getElementById('form-message').innerHTML = '<p class="error-message">Có lỗi xảy ra: ' + error + '</p>';
+            });
+        });
+    </script>
 </body>
 </html>

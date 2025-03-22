@@ -32,7 +32,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
 
                 // Đăng nhập tự động sau khi đăng ký
                 $_SESSION['user'] = $email;
-                header('Location: ../index.php');
+                header("Location: login.php");
                 exit();
             }
         } else {

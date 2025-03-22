@@ -4,6 +4,9 @@ $host = 'localhost';
 $dbname = 'apple_store';
 $username = 'root'; // Thay bằng username MySQL của bạn
 $password = 'root';     // Thay bằng password MySQL của bạn
+// $dbname = 'toanphat_apple_store';
+// $username = 'toanphat'; // Thay bằng username MySQL của bạn
+// $password = 'qCYc7aFq#P!659'; 
 
 try {
     $pdo = new PDO("mysql:host=$host;dbname=$dbname", $username, $password);
@@ -13,3 +16,4 @@ try {
     die("Kết nối thất bại: " . $e->getMessage());
 }
 ?>
+
