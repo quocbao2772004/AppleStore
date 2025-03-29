@@ -6,6 +6,8 @@ uvicorn rag_chatbot:app --host 0.0.0.0 --port 5002 --reload
 
 sudo supervisorctl restart generateqr send_email rag_chatbot bank_transaction_history transaction_notification generate_qr_cart
 
+sudo supervisorctl stop generateqr send_email rag_chatbot bank_transaction_history transaction_notification generate_qr_cart
+
 sudo nano /etc/supervisor/conf.d/fastapi_services.conf
 
 sudo nano /etc/nginx/sites-available/fastapi
