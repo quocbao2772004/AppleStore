@@ -8,6 +8,8 @@ sudo supervisorctl restart generateqr send_email rag_chatbot bank_transaction_hi
 
 sudo supervisorctl stop generateqr send_email rag_chatbot bank_transaction_history transaction_notification generate_qr_cart
 
+sudo supervisorctl start full_api generateqr send_email rag_chatbot bank_transaction_history transaction_notification generate_qr_cart
+
 sudo nano /etc/supervisor/conf.d/fastapi_services.conf
 
 sudo nano /etc/nginx/sites-available/fastapi
