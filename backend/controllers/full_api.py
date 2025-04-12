@@ -241,15 +241,46 @@ async def check_payment(order_id: str):
         return JSONResponse(status_code=500, content={'success': False, 'message': f'Lỗi hệ thống: {str(e)}'})
 
 # --- rag_chatbot ---
+# Cấu hình logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
+# --- Models ---
 class UserQuery(BaseModel):
     query: str
     session_id: Optional[str] = None
 
-chat_history = {}
+# --- Helper functions ---
+COMMON_REF_WORDS = ["nó", "này", "sản phẩm này", "sản phẩm đó", "cái đó", "ấy", "cái ấy", "nữa không", "có xịn không", "còn không"]
+AGREE_WORDS = ["có chứ", "vâng", "ok", "dạ", "đúng rồi", "đúng vậy", "có", "oke", "ok bạn", "ừ", "ừm", "ờ"]
+
+def is_greeting(text: str):
+    greetings = [r"\bhello\b", r"\bhi\b", r"\bhey\b", r"\bgood (morning|afternoon|evening|day)\b"]
+    return bool(re.search("|".join(greetings), text, re.IGNORECASE))
+
+def query_is_reference(query: str) -> bool:
+    return any(word in query.lower() for word in COMMON_REF_WORDS)
+
+def is_user_agreeing(query: str) -> bool:
+    return any(phrase in query.lower() for phrase in AGREE_WORDS)
+
+def detect_intent(query: str):
+    query_lower = query.lower()
+    if any(word in query_lower for word in ["giá", "bao nhiêu", "giá bao nhiêu"]):
+        return "ask_price"
+    if any(word in query_lower for word in ["xịn", "tốt", "dùng tốt", "xài tốt", "chất lượng"]):
+        return "ask_quality"
+    if any(word in query_lower for word in ["đánh giá", "nhận xét", "bình luận"]):
+        return "ask_reviews"
+    return "general"
 
 def load_config():
-    with open("../config/config.json", "r") as f:
-        return json.load(f)
+    try:
+        with open("../config/config.json", "r") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading config: {str(e)}")
+        raise HTTPException(status_code=500, detail="Cannot load configuration")
 
 def get_mysql_connection():
     config = load_config()
@@ -264,134 +295,237 @@ def get_mysql_connection():
     finally:
         connection.close()
 
-def retrieve_products(query: str, connection: mysql.connector.connection.MySQLConnection):
+def retrieve_products(query: str, connection):
     cursor = connection.cursor(dictionary=True)
-    irrelevant_words = {"giá", "bao", "nhiều", "của", "là", "hỏi", "về", "tôi", "muốn", "biết"}
+    irrelevant_words = {"giá", "bao", "nhiều", "của", "là", "hỏi", "về", "tôi", "muốn", "biết", "có", "không"}
     search_terms = [word for word in query.lower().split() if word not in irrelevant_words]
     if not search_terms:
         search_terms = ["%"]
     conditions = " OR ".join(["LOWER(p.name) LIKE %s" for _ in search_terms])
-    sql_query = f"""
-        SELECT p.id, p.name, p.price, p.image, p.category, p.quantity, 
-               AVG(c.rating) as avg_rating, COUNT(c.rating) as rating_count,
-               pd.description
+
+    sql = """
+        SELECT 
+            p.id, 
+            p.name, 
+            p.price, 
+            p.image, 
+            p.category, 
+            p.quantity, 
+            pd.description
         FROM products p
-        LEFT JOIN comments c ON p.id = c.product_id
         LEFT JOIN product_descriptions pd ON p.id = pd.product_id
-        WHERE ({conditions}) OR LOWER(p.category) LIKE %s
-        GROUP BY p.id, p.name, p.price, p.image, p.category, p.quantity, pd.description
+        WHERE (%s) OR LOWER(p.category) LIKE %s
+        LIMIT 5
     """
-    search_params = [f"%{term}%" for term in search_terms] + [f"%{query.lower()}%"]
-    cursor.execute(sql_query, tuple(search_params))
-    products = cursor.fetchall()
-    cursor.close()
-    for product in products:
-        product['avg_rating'] = float(product['avg_rating']) if product['avg_rating'] is not None else None
-    return products
+    params = [f"%{term}%" for term in search_terms] + [f"%{query.lower()}%"]
+    try:
+        cursor.execute(sql % (conditions, "%s"), params)
+        products = cursor.fetchall()
+        logger.debug(f"Retrieved {len(products)} products for query: {query} - {[p['name'] for p in products]}")
+        return products
+    except Exception as e:
+        logger.error(f"Error retrieving products: {str(e)}")
+        return []
+    finally:
+        cursor.close()
 
-def direct_answer(query: str, products: list):
-    query_lower = query.lower()
-    if "giá bao nhiêu" in query_lower:
-        query_name = " ".join(word for word in query_lower.split() if word not in {"giá", "bao", "nhiều"})
-        for product in products:
-            if all(word in product['name'].lower() for word in query_name.split()):
-                return f"Giá của {product['name']} là {product['price']}."
-    if "dùng tốt" in query_lower or "tốt nhất" in query_lower:
-        rated_products = [p for p in products if p['avg_rating'] is not None]
-        if rated_products:
-            best_product = max(rated_products, key=lambda x: x['avg_rating'])
-            return (
-                f"Dựa trên đánh giá, {best_product['name']} là sản phẩm tốt nhất "
-                f"với điểm trung bình {best_product['avg_rating']:.1f}/5 ({best_product['rating_count']} đánh giá)."
-            )
-        return "Không có đánh giá để xác định sản phẩm tốt nhất."
-    return None
+def save_chat_history(session_id, user_query, bot_response, connection, related_product_id=None, related_category=None):
+    cursor = connection.cursor()
+    sql = """
+        INSERT INTO chat_history 
+        (session_id, user_query, bot_response, related_product_id, related_category, created_at)
+        VALUES (%s, %s, %s, %s, %s, %s)
+    """
+    try:
+        cursor.execute(sql, (
+            session_id, 
+            user_query, 
+            bot_response, 
+            related_product_id, 
+            related_category, 
+            datetime.now()
+        ))
+        connection.commit()
+        logger.debug(f"Saved chat history: session_id={session_id}, query={user_query}, product_id={related_product_id}")
+    except Exception as e:
+        logger.error(f"Error saving chat history: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error saving chat history: {str(e)}")
+    finally:
+        cursor.close()
 
-def create_prompt(query: str, products: list, session_id: str):
-    if not products:
-        return (
-            f"User hỏi: {query}\nKhông tìm thấy sản phẩm phù hợp trong cơ sở dữ liệu."
-        )
-    product_list = "\n".join([
-        f"- Tên: {p['name']}, Giá: {p['price']}, Danh mục: {p['category']}, "
-        f"Số lượng: {p['quantity']}, Đánh giá trung bình: {p['avg_rating'] if p['avg_rating'] else 'Chưa có'}, "
-        f"({p['rating_count']} đánh giá), Mô tả: {p['description'] if p['description'] else 'Không có'}"
-        for p in products
-    ])
-    history = chat_history.get(session_id, [])
-    history_text = "\n".join([f"User: {item['query']}\nBot: {item['response']}" for item in history])
+def load_chat_history(session_id: str, connection):
+    cursor = connection.cursor(dictionary=True)
+    sql = """
+        SELECT 
+            user_query, 
+            bot_response, 
+            related_product_id, 
+            related_category
+        FROM chat_history
+        WHERE session_id = %s
+        ORDER BY created_at ASC
+        LIMIT 10
+    """
+    try:
+        cursor.execute(sql, (session_id,))
+        history = cursor.fetchall()
+        logger.debug(f"Loaded {len(history)} chat history records for session_id: {session_id}")
+        return history
+    except Exception as e:
+        logger.error(f"Error loading chat history: {str(e)}")
+        return []
+    finally:
+        cursor.close()
+
+def create_prompt(query: str, products: list, history: list, related_product_name: Optional[str] = None):
+    product_info = "\n".join([
+        f"- {p['name']}: Giá {p['price']}, Danh mục: {p['category']}, Mô tả: {p.get('description', 'Không có mô tả')}"
+        for p in products[:2]  # Giới hạn 2 sản phẩm để prompt ngắn hơn
+    ]) or "Không có thông tin sản phẩm."
+
+    # Chỉ lấy 3 hội thoại cuối để tránh prompt quá dài
+    history_text = "\n".join([
+        f"User: {h['user_query']}\nBot: {h['bot_response']}" 
+        for h in history[-3:]
+    ]) if history else "Không có lịch sử hội thoại."
+
+    # Đơn giản hóa ngữ cảnh
+    context_text = (
+        f"Người dùng đang hỏi về '{related_product_name}'. "
+        f"Khi thấy từ 'nó', 'này', hoặc 'sản phẩm này', hiểu là '{related_product_name}'.\n"
+    ) if related_product_name else "Không có sản phẩm nào được nhắc trước đó.\n"
+
     prompt = (
-        f"Bạn là trợ lý ảo Apple Intelligence của Apple Store.\n"
-        f"Lịch sử chat:\n{history_text}\n"
-        f"User hỏi: {query}\n"
-        f"Thông tin sản phẩm:\n{product_list}\n"
-        f"Trả lời dựa trên thông tin trên. Nếu không đủ thông tin, nói 'Xin lỗi, mình không có thông tin cho câu hỏi này.'"
+        f"Bạn là trợ lý Apple Store Hà Nội, trả lời bằng tiếng Việt, ngắn gọn, thân thiện, đúng thông tin.\n"
+        f"Ngữ cảnh: {context_text}"
+        f"Sản phẩm liên quan:\n{product_info}\n"
+        f"Lịch sử hội thoại:\n{history_text}\n"
+        f"Câu hỏi: {query}\n"
+        f"Trả lời dựa trên thông tin sản phẩm và lịch sử. Nếu câu hỏi có 'nó', tập trung vào '{related_product_name}'. "
+        f"Nếu không rõ, hỏi lại lịch sự. Không thêm thông tin ngoài dữ liệu."
     )
+    logger.debug(f"Generated prompt:\n{prompt}")
     return prompt
 
-def generate_with_rag(query: str, products: list, session_id: str):
-    direct_response = direct_answer(query, products)
-    if direct_response:
-        return direct_response
+def generate_with_gemini(prompt):
     config = load_config()
-    api_key = config.get("GOOGLE_API_KEY")
-    client = genai.Client(api_key=api_key)
+    client = genai.Client(api_key=config["GOOGLE_API_KEY"])
     model = "gemini-2.0-flash"
-    prompt = create_prompt(query, products, session_id)
-    contents = [types.Content(role="user", parts=[types.Part.from_text(text=prompt)])]
-    generate_content_config = types.GenerateContentConfig(
-        temperature=0.7, top_p=0.9, top_k=40, max_output_tokens=8192, response_mime_type="text/plain"
+    contents = [types.Content(role="user", parts=[types.Part.from_text(prompt)])]
+    generate_config = types.GenerateContentConfig(
+        temperature=0.6,  # Giảm temperature để trả lời chính xác hơn
+        top_p=0.9,
+        top_k=40,
+        max_output_tokens=2048  # Giảm token để nhanh hơn
     )
-    response = ""
-    for chunk in client.models.generate_content_stream(model=model, contents=contents, config=generate_content_config):
-        response += chunk.text
-    return response
+    try:
+        response = ""
+        for chunk in client.models.generate_content_stream(model=model, contents=contents, config=generate_config):
+            response += chunk.text
+        logger.debug(f"Gemini response: {response}")
+        # Fallback nếu Gemini không trả lời đúng
+        if "không hiểu" in response.lower() or "sản phẩm nào" in response.lower():
+            logger.warning(f"Gemini failed to understand context, response: {response}")
+            return None
+        return response
+    except Exception as e:
+        logger.error(f"Error with Gemini API: {str(e)}")
+        return None
 
-def is_greeting(text):
-    greetings = [r"\bhello\b", r"\bhi\b", r"\bhey\b", r"\bgood (morning|afternoon|evening|day)\b"]
-    pattern = re.compile("|".join(greetings), re.IGNORECASE)
-    return bool(pattern.search(text))
-
+# --- Main chatbot endpoint ---
 @app.post("/ask")
 async def ask_bot(user_query: UserQuery, connection: mysql.connector.connection.MySQLConnection = Depends(get_mysql_connection)):
-    query = user_query.query
-    session_id = user_query.session_id if user_query.session_id else str(uuid.uuid4())
+    query = user_query.query.strip()
+    session_id = user_query.session_id or str(uuid.uuid4())
+    logger.debug(f"Processing query: {query}, session_id: {session_id}, client_session_id: {user_query.session_id}")
+
+    if not query:
+        return JSONResponse(
+            status_code=400,
+            content={"response": "Vui lòng gửi câu hỏi!", "session_id": session_id}
+        )
+
+    # Xử lý lời chào
     if is_greeting(query):
-        response = "Xin chào! Mình là trợ lý ảo của Apple Store."
+        response = "Chào bạn! Mình là trợ lý Apple Store Hà Nội. Bạn muốn tìm hiểu về sản phẩm nào hôm nay?"
+        save_chat_history(session_id, query, response, connection)
+        return {"response": response, "session_id": session_id}
+
+    cursor = connection.cursor(dictionary=True)
+
+    # Tải lịch sử hội thoại
+    history = load_chat_history(session_id, connection)
+    if not history:
+        logger.debug(f"No chat history found for session_id: {session_id}")
+
+    # Tìm sản phẩm gần nhất
+    cursor.execute("""
+        SELECT p.id, p.name, p.price, p.category, p.image, p.quantity, pd.description
+        FROM chat_history h
+        JOIN products p ON h.related_product_id = p.id
+        LEFT JOIN product_descriptions pd ON p.id = pd.product_id
+        WHERE h.session_id = %s AND h.related_product_id IS NOT NULL
+        ORDER BY h.created_at DESC
+        LIMIT 1
+    """, (session_id,))
+    last_product = cursor.fetchone()
+    logger.debug(f"Last product: {last_product['name'] if last_product else 'None'}")
+
+    # Xác định intent và sản phẩm
+    intent = detect_intent(query)
+    logger.debug(f"Detected intent: {intent}")
+
+    products = []
+    related_product_id = None
+    related_product_name = None
+    related_category = None
+
+    # Xử lý câu hỏi tham chiếu hoặc hỏi về chất lượng
+    if last_product and (query_is_reference(query) or intent == "ask_quality" or is_user_agreeing(query)):
+        products = [last_product]
+        related_product_id = last_product['id']
+        related_product_name = last_product['name']
+        related_category = last_product['category']
+        logger.debug(f"Linked to last product: {related_product_name} (ID={related_product_id})")
     else:
+        # Tìm sản phẩm mới
         products = retrieve_products(query, connection)
-        response = generate_with_rag(query, products, session_id)
-    if session_id not in chat_history:
-        chat_history[session_id] = []
-    chat_history[session_id].append({"query": query, "response": response})
+        if products:
+            related_product_id = products[0]['id']
+            related_product_name = products[0]['name']
+            related_category = products[0]['category']
+            logger.debug(f"Found new products: {[p['name'] for p in products]}")
+        else:
+            logger.debug(f"No products found for query: {query}")
+
+    # Tạo prompt và trả lời
+    response = None
+    if products or last_product:
+        prompt = create_prompt(query, products or [last_product], history, related_product_name)
+        response = generate_with_gemini(prompt)
+        # Fallback nếu Gemini trả lời không đúng
+        if response is None and related_product_name:
+            response = (
+                f"Xin lỗi, mình chưa hiểu rõ ý bạn. Bạn đang hỏi về {related_product_name}, đúng không? "
+                f"Nó có giá {last_product['price']} và rất được ưa chuộng. Bạn muốn biết thêm gì về sản phẩm này ạ?"
+            )
+            logger.debug(f"Using fallback response for {related_product_name}")
+    else:
+        response = "Xin lỗi, mình chưa tìm thấy sản phẩm bạn nhắc tới. Bạn có thể nói rõ hơn về sản phẩm bạn quan tâm không ạ?"
+        logger.warning(f"No products matched query: {query}")
+
+    # Lưu lịch sử
+    save_chat_history(
+        session_id=session_id,
+        user_query=query,
+        bot_response=response,
+        connection=connection,
+        related_product_id=related_product_id,
+        related_category=related_category
+    )
+
+    cursor.close()
     return {"response": response, "session_id": session_id}
-
-# --- send_email ---
-@app.post('/send-email')
-async def send_email(
-    name: str = Form(...),
-    email: str = Form(...),
-    phone: str = Form(...),
-    message: str = Form(...)
-):
-    try:
-        if not all([name, email, phone, message]):
-            raise HTTPException(status_code=400, detail="Vui lòng điền đầy đủ thông tin!")
-        subject = 'Tin nhắn mới từ Apple Store Contact Form'
-        body = f"Họ và tên: {name}\nEmail: {email}\nSố điện thoại: {phone}\nTin nhắn:\n{message}"
-        msg = MIMEMultipart()
-        msg['From'] = EMAIL_SENDER
-        msg['To'] = EMAIL_RECEIVER
-        msg['Subject'] = subject
-        msg.attach(MIMEText(body, 'plain'))
-        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
-            server.starttls()
-            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
-            server.send_message(msg)
-        return {'success': True, 'message': 'Tin nhắn của bạn đã được gửi thành công!'}
-    except Exception as e:
-        return JSONResponse(status_code=500, content={'success': False, 'message': f'Có lỗi khi gửi tin nhắn: {str(e)}'})
-
 # --- transaction_notification ---
 def is_valid_email(email):
     pattern = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
