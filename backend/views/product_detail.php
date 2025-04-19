@@ -6,7 +6,7 @@ if (!isset($pdo)) {
     $host = 'localhost';
     $dbname = 'apple_store';
     $username = 'root';
-    $password = '';
+    $password = 'root';
     try {
         $pdo = new PDO("mysql:host=$host;dbname=$dbname", $username, $password);
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);

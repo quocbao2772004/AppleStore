@@ -48,6 +48,6 @@ if ($error) {
     $_SESSION['login_error'] = $error;
     $_SESSION['login_email'] = $email ?? '';
 }
-header('Location: login_form.php');
+header('Location: ../../frontend/views/login_form.php');
 exit();
 ?>
