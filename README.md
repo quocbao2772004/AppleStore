@@ -27,11 +27,12 @@ Here are the detailed weekly reports outlining the project’s progress:
   *Date: March 29, 2025*  
    **[📄 Fourth Report](https://github.com/quocbao2772004/AppleStore/blob/main/report/B22DCVT050_5_4_2025_weekly_report.pdf)**  
   *Date: April 5, 2025*  
-     **[📄 Fifth Report](https://github.com/quocbao2772004/AppleStore/blob/main/report/B22DCVT050_12_4_2025_weekly_report.pdf)**  
+  **[📄 Fifth Report](https://github.com/quocbao2772004/AppleStore/blob/main/report/B22DCVT050_12_4_2025_weekly_report.pdf)**  
   *Date: April 12, 2025*  
   Developing Admin Dashboard
-       **[📄 Sixth Report](https://github.com/quocbao2772004/AppleStore/blob/main/report/B22DCVT050_19_04_2025_weekly_report.pdf)**  
-  *Date: April 19, 2025*  
+  
+  **[📄 Sixth Report](https://github.com/quocbao2772004/AppleStore/blob/main/report/B22DCVT050_19_04_2025_weekly_report.pdf)**  
+*Date: April 19, 2025*  
   Complete Admin Dashboard
 ## 👨‍💻 Contributor
 
