@@ -60,8 +60,8 @@ fetch('../../backend/views/cart.php')
                 }
 
                 input.value = quantity;
-
-                fetch('update_cart.php', {
+               
+                fetch('../../../backend/views/update_cart.php', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                     body: `product_id=${productId}&quantity=${quantity}`
@@ -77,19 +77,19 @@ fetch('../../backend/views/cart.php')
         // Xử lý nút thanh toán
         document.getElementById('checkout-btn').addEventListener('click', function(e) {
             e.preventDefault();
-
+        
             const productIds = cartItems.map(item => item.id);
             const quantities = cartItems.map(item => item.quantity);
-
+        
             const items = productIds.map((id, index) => ({
                 product_id: id,
                 quantity: quantities[index]
             }));
-
+        
             const formData = new FormData();
             formData.append('items', JSON.stringify(items));
             formData.append('amount', total);
-
+        
             fetch('http://localhost:4090/generate-qr-cart', {
                 method: 'POST',
                 body: formData
@@ -109,76 +109,54 @@ fetch('../../backend/views/cart.php')
                 }
             });
         });
-
+        
         document.getElementById('confirm-btn').addEventListener('click', function() {
             const modal = document.getElementById('qrModal');
             const orderId = modal.dataset.orderId;
-
+        
             if (!orderId) {
                 alert('Không tìm thấy mã đơn hàng!');
                 return;
             }
-
-            fetch(`http://localhost:4090/check-payment/${orderId}`)
+        
+            // Thêm user_email vào yêu cầu
+            fetch(`http://localhost:4090/check-payment/${orderId}?user_email=${encodeURIComponent(userEmail)}`)
             .then(response => {
                 if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
                 return response.json();
             })
             .then(data => {
                 if (data.success) {
-                    alert('Thanh toán đã được xác nhận!');
+                    alert('Thanh toán đã được xác nhận! Đơn hàng đã được lưu.');
                     modal.style.display = 'none';
-
-                    // Lưu đơn hàng vào database
-                    const orderData = new FormData();
-                    orderData.append('user_email', userEmail);
-                    orderData.append('total', total);
-                    orderData.append('cart_items', JSON.stringify(cartItems));
-
-                    fetch('../../backend/views/save_order.php', {
+        
+                    // Gửi email thông báo
+                    const emailFormData = new FormData();
+                    emailFormData.append('email_receiver', userEmail);
+                    emailFormData.append('cart_items', JSON.stringify(cartItems));
+                    emailFormData.append('total', total);
+        
+                    fetch('http://localhost:4090/send-email-notification', {
                         method: 'POST',
-                        body: orderData
+                        body: emailFormData
                     })
                     .then(response => {
                         if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
                         return response.json();
                     })
-                    .then(orderResult => {
-                        if (orderResult.success) {
-
-                            const emailFormData = new FormData();
-                            emailFormData.append('email_receiver', userEmail);
-                            emailFormData.append('cart_items', JSON.stringify(cartItems));
-                            emailFormData.append('total', total);
-
-                            fetch('http://localhost:4090/send-email-notification', {
-                                method: 'POST',
-                                body: emailFormData
-                            })
-                            .then(response => {
-                                if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
-                                return response.json();
-                            })
-                            .then(emailData => {
-                                if (emailData.success) {
-                                    alert('Email đã được gửi thành công!');
-                                    // Xóa giỏ hàng sau khi thanh toán thành công (tùy chọn)
-                                    fetch('../../backend/views/clear_cart.php', {
-                                        method: 'POST'
-                                    }).then(() => location.reload());
-                                } else {
-                                    alert('Gửi email thất bại: ' + emailData.message);
-                                }
-                            })
-                            .catch(error => {
-                                alert('Lỗi khi gửi email: ' + error.message);
-                            });
+                    .then(emailData => {
+                        if (emailData.success) {
+                            alert('Email xác nhận đã được gửi thành công!');
+                            // Xóa giỏ hàng
+                            fetch('../../backend/views/clear_cart.php', {
+                                method: 'POST'
+                            }).then(() => location.reload());
                         } else {
-                            alert('Lưu đơn hàng thất bại: ' + orderResult.message);
+                            alert('Gửi email thất bại: ' + emailData.message);
                         }
                     })
                     .catch(error => {
-                        alert('Lỗi khi lưu đơn hàng: ' + error.message);
+                        alert('Lỗi khi gửi email: ' + error.message);
                     });
                 } else {
                     alert('Chưa nhận được thanh toán phù hợp: ' + data.message);
@@ -188,7 +166,6 @@ fetch('../../backend/views/cart.php')
                 alert('Lỗi khi kiểm tra thanh toán: ' + error.message);
             });
         });
-
         // Đóng modal
         document.querySelector('.close').addEventListener('click', function() {
             document.getElementById('qrModal').style.display = 'none';

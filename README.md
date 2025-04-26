@@ -34,6 +34,10 @@ Here are the detailed weekly reports outlining the project’s progress:
   **[📄 Sixth Report](https://github.com/quocbao2772004/AppleStore/blob/main/report/B22DCVT050_19_04_2025_weekly_report.pdf)**  
 *Date: April 19, 2025*  
   Complete Admin Dashboard
+  
+   **[📄 Seventh Report](https://github.com/quocbao2772004/AppleStore/blob/main/report/B22DCVT050_26_04_2025_weekly_report.pdf)**  
+*Date: April 26, 2025*  
+
 ## 👨‍💻 Contributor
 
 - **Lê Trần Quốc Bảo**  

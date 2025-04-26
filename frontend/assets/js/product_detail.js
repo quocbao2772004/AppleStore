@@ -110,7 +110,8 @@ document.getElementById('confirm-btn').addEventListener('click', function() {
         return;
     }
 
-    fetch(`http://localhost:4090/check-payment/${orderId}`)
+    // Thêm user_email vào URL query
+    fetch(`http://localhost:4090/check-payment/${orderId}?user_email=${encodeURIComponent(userEmail)}`)
     .then(response => {
         if (!response.ok) throw new Error(`HTTP error! Status: ${response.status}`);
         return response.json();
@@ -120,6 +121,7 @@ document.getElementById('confirm-btn').addEventListener('click', function() {
             alert('Thanh toán đã được xác nhận!');
             modal.style.display = 'none';
 
+            // Gửi email thông báo
             const emailFormData = new FormData();
             emailFormData.append('email_receiver', userEmail);
             emailFormData.append('cart_items', JSON.stringify(cartItems));
