@@ -8,3 +8,5 @@ backend/controllers/rag_chatbot.py
 backend/controllers/send_email.py
 backend/controllers/transaction_notification.py
 backend/controllers/test_new_chatbot.py
+
+gen-lang-client-0541539039-8ca4e6cb624a.json
