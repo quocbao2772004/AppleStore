@@ -664,7 +664,49 @@ async def ask_bot(user_query: UserQuery, connection: mysql.connector.connection.
 def is_valid_email(email):
     pattern = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\.[a-zA-Z0-9-.]+$'
     return re.match(pattern, email) is not None
+@app.post('/send-email')
+async def send_email(
+    name: str = Form(...),
+    email: str = Form(...),
+    phone: str = Form(...),
+    message: str = Form(...)
+):
+    try:
+        logger.debug(f"Received POST request - Name: {name}, Email: {email}, Phone: {phone}, Message: {message}")
 
+        # Kiểm tra dữ liệu
+        if not all([name, email, phone, message]):
+            logger.warning("Missing form data")
+            raise HTTPException(status_code=400, detail="Vui lòng điền đầy đủ thông tin!")
+
+        # Tạo nội dung email
+        subject = 'Tin nhắn mới từ Apple Store Contact Form'
+        body = f"Họ và tên: {name}\nEmail: {email}\nSố điện thoại: {phone}\nTin nhắn:\n{message}"
+
+        msg = MIMEMultipart()
+        msg['From'] = EMAIL_SENDER
+        msg['To'] = EMAIL_RECEIVER
+        msg['Subject'] = subject
+        msg.attach(MIMEText(body, 'plain'))
+
+        # Gửi email qua SMTP
+        logger.debug("Connecting to SMTP server")
+        with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
+            server.starttls()
+            logger.debug("Logging in to SMTP server")
+            server.login(EMAIL_SENDER, EMAIL_PASSWORD)
+            logger.debug("Sending email")
+            server.sendmail(EMAIL_SENDER, EMAIL_RECEIVER, msg.as_string())
+            logger.debug("Email sent successfully")
+
+        return {'success': True, 'message': 'Tin nhắn của bạn đã được gửi thành công!'}
+
+    except Exception as e:
+        logger.error(f"Error occurred: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={'success': False, 'message': f'Có lỗi xảy ra khi gửi tin nhắn: {str(e)}'}
+        )
 @app.post('/send-email-notification')
 async def send_email_notification(
     email_receiver: str = Form(...),

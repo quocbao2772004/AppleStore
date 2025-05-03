@@ -15,6 +15,7 @@ session_start();
         </svg>
         Trợ lý ảo
     </a>
+    <a href="in4.php">Thông tin tài khoản</a>
     <a href="logout.php">Đăng xuất</a>
     <span class="user-email-frame"><?php echo htmlspecialchars($_SESSION['user_email'] ?? 'Người dùng'); ?></span>
 </nav>

@@ -1,0 +1,7 @@
+[2025-05-10 00:10:24.171238] Đây là sản phẩm Mac mini của Apple. 
+
+- **Model**: Không thể xác định chính xác model cụ thể từ hình ảnh này vì không có thông tin chi tiết về phiên bản (ví dụ: Mac mini M1, Mac mini 2018, v.v.).
+- **Dung lượng lưu trữ**: Không thể xác định từ hình ảnh này vì không có thông tin về dung lượng lưu trữ.
+- **Màu sắc**: Sản phẩm có màu bạc (silver).
+
+Mac mini là một máy tính để bàn nhỏ gọn của Apple, thường được sử dụng trong các cài đặt văn phòng hoặc gia đình nhờ vào kích thước nhỏ và hiệu suất mạnh mẽ.

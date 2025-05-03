@@ -7,3 +7,4 @@ backend/controllers/generateqr.py
 backend/controllers/rag_chatbot.py
 backend/controllers/send_email.py
 backend/controllers/transaction_notification.py
+backend/controllers/test_new_chatbot.py
