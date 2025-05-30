@@ -1,0 +1,6 @@
+2025-05-24T23:00:49+0700 | REQUEST: chào
+2025-05-24T23:00:49+0700 | HTTP_CODE: 200
+2025-05-24T23:00:49+0700 | RESPONSE: {"async":"https://file01.fpt.ai/text2speech-v5/short/2025-05-24/86d03cd268e688cbde92a181a9d29328.mp3","error":0,"message":"The content will be returned after a few seconds under the async link.","request_id":"072b80f8-8a2c-4496-b3b5-3d205ed087fe"}
+2025-05-24T23:00:49+0700 | MP3_URL: https://file01.fpt.ai/text2speech-v5/short/2025-05-24/86d03cd268e688cbde92a181a9d29328.mp3
+2025-05-24T23:00:54+0700 | MP3_DATA TRY 0: OK
+2025-05-24T23:00:54+0700 | WRITE FILE: audio/e94dffb4296ce2c573656f877ff89d69.mp3 => OK
