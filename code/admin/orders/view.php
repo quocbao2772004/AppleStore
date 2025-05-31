@@ -152,8 +152,8 @@ include '../includes/header.php';
                                 <tr>
                                     <th>Trạng Thái:</th>
                                     <td>
-                                        <span class="badge bg-<?php echo $order['payment_status'] === 'paid' ? 'success' : 'warning'; ?>">
-                                            <?php echo $order['payment_status'] === 'paid' ? 'Đã Thanh Toán' : 'Chưa Thanh Toán'; ?>
+                                        <span class="badge bg-<?php echo $order['payment_method'] === 'qr_code' ? 'success' : 'warning'; ?>">
+                                            <?php echo $order['payment_method'] === 'qr_code' ? 'Đã Thanh Toán' : 'Chưa Thanh Toán'; ?>
                                         </span>
                                     </td>
                                 </tr>
