@@ -1,0 +1,17 @@
+
+
+
+
+config/bank_config.json
+admin/assistant/config.py 
+controllers/text_to_speech.py
+controllers/chatbot.py 
+controllers/qrcode.py 
+controllers/send_email.py
+controllers/bank_transaction_history.py
+controllers/data
+admin/assistant/chatbot.py
+admin/assistant/chatbotv2.py
+text.txt 
+controllers/chatbotv2_history.py
+old_version 
