@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+.env
+crawl.log
+crawl.pid
+data/
+apple-design-skills/
+.DS_Store

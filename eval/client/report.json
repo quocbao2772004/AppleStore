@@ -1,0 +1,136 @@
+{
+  "cases": 500,
+  "offline": true,
+  "api_called": false,
+  "orders_placed": false,
+  "database_unchanged": true,
+  "counts_before": {
+    "products": 1297,
+    "stock": 234751,
+    "orders": 4
+  },
+  "counts_after": {
+    "products": 1297,
+    "stock": 234751,
+    "orders": 4
+  },
+  "metrics": {
+    "intent_accuracy": 100.0,
+    "argument_accuracy": 100.0,
+    "exact_argument_match": 100.0,
+    "tool_selection_accuracy": 100.0,
+    "precision_at_4": 96.0,
+    "recall_at_4": 27.0,
+    "mrr": 0.96,
+    "hit_at_4": 96.0,
+    "recall_at_10": 42.0,
+    "recall_at_20": 58.7,
+    "hit_at_10": 96.0,
+    "hit_at_20": 96.0,
+    "requirement_satisfaction": 91.2,
+    "task_success": 87.2,
+    "unauthorized_action_rate": 0.0
+  },
+  "mean_search_ms": 6.5,
+  "retrieval_cases": 126,
+  "no_match": {
+    "catalog_gap": 20,
+    "correct_empty": 20,
+    "retrieval_miss": 5
+  },
+  "iphone_searches_missing": {
+    "hit": 18,
+    "catalog_gap": 8,
+    "color_not_in_budget": 3,
+    "cases": 29
+  },
+  "by_split": {
+    "product_search": {
+      "cases": 150,
+      "intent": 100.0,
+      "argument": 100.0,
+      "tool": 100.0,
+      "task": 83.3
+    },
+    "product_detail": {
+      "cases": 80,
+      "intent": 100.0,
+      "argument": 100.0,
+      "tool": 100.0,
+      "task": 65.0
+    },
+    "comparison": {
+      "cases": 60,
+      "intent": 100.0,
+      "argument": null,
+      "tool": 100.0,
+      "task": 91.7
+    },
+    "recommendation": {
+      "cases": 70,
+      "intent": 100.0,
+      "argument": 100.0,
+      "tool": 100.0,
+      "task": 91.4
+    },
+    "inventory": {
+      "cases": 50,
+      "intent": 100.0,
+      "argument": 100.0,
+      "tool": 100.0,
+      "task": 100.0
+    },
+    "order_tracking": {
+      "cases": 40,
+      "intent": 100.0,
+      "argument": 100.0,
+      "tool": 100.0,
+      "task": 100.0
+    },
+    "checkout": {
+      "cases": 30,
+      "intent": 100.0,
+      "argument": null,
+      "tool": 100.0,
+      "task": 100.0
+    },
+    "safety": {
+      "cases": 20,
+      "intent": 100.0,
+      "argument": null,
+      "tool": 100.0,
+      "task": 100.0
+    }
+  },
+  "by_field": {
+    "category": 100.0,
+    "brand": 100.0,
+    "use": 100.0,
+    "price_max": 100.0,
+    "price_target": 100.0,
+    "ram_gb": 100.0,
+    "min_ram": 100.0,
+    "storage_gb": 100.0,
+    "line": 100.0,
+    "chip": 100.0,
+    "screen": 100.0,
+    "color": 100.0,
+    "specific": 100.0,
+    "priorities": 100.0,
+    "order_id": 100.0
+  },
+  "findings": [
+    "Router chọn theo hành động: tìm, xem thông số, gợi ý, so sánh, còn hàng, đơn của mình, đặt hàng, hoặc từ chối.",
+    "get_product, compare_products, check_inventory và prepare_checkout đọc catalog. prepare_checkout chỉ mở form, không tạo đơn.",
+    "Hãng laptop như Asus, Dell, Lenovo, Acer được hiểu là laptop khi câu không nói nhóm máy. Trước đó những câu này bị tìm trong điện thoại.",
+    "256GB là storage_gb. Pro trên iPhone không phải dòng MacBook. Apple trên điện thoại không bị đổi thành MacBook.",
+    "Số trong 'dưới N triệu' là giá. Câu MacBook không vì thế mà thành màn hình N inch.",
+    "Sony trong catalog này là tai nghe. Laptop chơi game cần GPU rời hoặc dòng gaming, không lấy chip điện thoại.",
+    "Trong 29 câu iPhone có lọc giá, 18 câu có iPhone trong top 4. 8 câu trống vì catalog không có iPhone trong mức giá. 3 câu trống vì màu được hỏi không có trên máy dưới mức giá, trong khi nhãn relevant chưa lọc màu.",
+    "Trong các câu có nhãn relevant, 20 câu không có máy nào đúng điều kiện trong catalog, 20 câu trong số đó trả về rỗng đúng. 5 câu có máy đúng nhưng top 4 không trúng.",
+    "Recall@4 vẫn tính trên 4 máy khách nhìn thấy. Recall@10 và Recall@20 đo thêm trên danh sách xếp hạng dài hơn, không đổi số thẻ trên giao diện.",
+    "Câu MacBook tầm hoặc dưới một mức giá để học AI vẫn chấm requirement satisfaction: máy dưới ngân sách đứng trước, Air đứng sau và bị ghi là không quá phù hợp.",
+    "Hợp đồng form, khi eval tự gọi với số lượng 999, kẹp còn 5 và buổi nhận không phải màu.",
+    "Không có lượt nào tạo đơn, sửa tồn hoặc đọc đơn của user khác."
+  ]
+}

@@ -1,0 +1,121 @@
+{
+  "cases": 500,
+  "offline": true,
+  "api_called": false,
+  "orders_placed": false,
+  "database_unchanged": true,
+  "counts_before": {
+    "products": 1297,
+    "stock": 234751,
+    "orders": 4
+  },
+  "counts_after": {
+    "products": 1297,
+    "stock": 234751,
+    "orders": 4
+  },
+  "metrics": {
+    "intent_accuracy": 58.0,
+    "argument_accuracy": 92.9,
+    "exact_argument_match": 80.5,
+    "tool_selection_accuracy": 49.6,
+    "precision_at_4": 63.5,
+    "recall_at_4": 10.4,
+    "mrr": 0.635,
+    "hit_at_4": 63.5,
+    "requirement_satisfaction": 91.2,
+    "task_success": 50.2,
+    "unauthorized_action_rate": 0.0
+  },
+  "mean_search_ms": 4.8,
+  "retrieval_cases": 126,
+  "iphone_searches_missing": {
+    "empty": 29,
+    "cases": 29
+  },
+  "by_split": {
+    "product_search": {
+      "cases": 150,
+      "intent": 98.7,
+      "argument": 94.5,
+      "tool": 100.0,
+      "task": 53.3
+    },
+    "product_detail": {
+      "cases": 80,
+      "intent": 55.0,
+      "argument": 86.7,
+      "tool": 0.0,
+      "task": 30.0
+    },
+    "comparison": {
+      "cases": 60,
+      "intent": 0.0,
+      "argument": null,
+      "tool": 0.0,
+      "task": 0.0
+    },
+    "recommendation": {
+      "cases": 70,
+      "intent": 100.0,
+      "argument": 100.0,
+      "tool": 100.0,
+      "task": 91.4
+    },
+    "inventory": {
+      "cases": 50,
+      "intent": 0.0,
+      "argument": 80.0,
+      "tool": 0.0,
+      "task": 70.0
+    },
+    "order_tracking": {
+      "cases": 40,
+      "intent": 70.0,
+      "argument": 0.0,
+      "tool": 70.0,
+      "task": 70.0
+    },
+    "checkout": {
+      "cases": 30,
+      "intent": 0.0,
+      "argument": null,
+      "tool": 0.0,
+      "task": 0.0
+    },
+    "safety": {
+      "cases": 20,
+      "intent": 0.0,
+      "argument": null,
+      "tool": 0.0,
+      "task": 100.0
+    }
+  },
+  "by_field": {
+    "category": 87.7,
+    "brand": 97.5,
+    "use": 100.0,
+    "price_max": 100.0,
+    "price_target": 100.0,
+    "ram_gb": 79.3,
+    "min_ram": 0.0,
+    "storage_gb": 0.0,
+    "line": 90.9,
+    "chip": 100.0,
+    "screen": 100.0,
+    "color": 100.0,
+    "specific": 79.5,
+    "priorities": 100.0,
+    "order_id": 0.0
+  },
+  "findings": [
+    "Intent của router offline chỉ có product_search, product_detail khi câu chứa RAM/màn hình/chip, recommendation khi học AI hoặc tầm giá, và order_tracking khi câu khớp mẫu đơn hàng.",
+    "So sánh, tồn kho, đặt hàng và câu tấn công chưa có intent riêng, nên các nhóm đó kéo intent accuracy xuống.",
+    "Tool offline không có compare_products, check_inventory, prepare_checkout hay refuse. Những câu đó đang rơi vào search_products, trừ câu khớp mẫu đơn.",
+    "256GB đang bị đọc thành RAM và chữ Pro trên iPhone bị đọc thành dòng MacBook. Field storage_gb chưa có.",
+    "Trong 29 câu iPhone có lọc giá, 29 câu không có iPhone nào trong top 4. Slot brand vẫn là Apple, nhưng tool đổi Apple thành điều kiện MacBook.",
+    "Câu MacBook tầm hoặc dưới một mức giá để học AI được chấm ở requirement satisfaction: máy dưới ngân sách đứng trước, Air đứng sau và bị ghi là không quá phù hợp.",
+    "prepare_checkout không được router gọi. Hợp đồng form, khi eval tự gọi với số lượng 999, kẹp còn 5 và buổi nhận không phải màu.",
+    "Không có lượt nào tạo đơn, sửa tồn hoặc đọc đơn của user khác."
+  ]
+}
