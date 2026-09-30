@@ -1,32 +1,10 @@
-# Form
+# Octopus Store
 
-Form is version 2 of this repository, on `main`. Version 1, Apple Store Online, is unchanged on the [`ver1`](https://github.com/quocbao2772004/AppleStore/tree/ver1) branch (tag `v1`).
+Octopus Store is a Vietnamese storefront for phones, laptops, headphones, tablets, and smartwatches. Prices come from a scrape of [Thế Giới Di Động](https://www.thegioididong.com/) and are Ho Chi Minh City reference prices. Checkout is simulated: nothing is charged.
 
-Form is a local Vietnamese storefront for phones, laptops, headphones, tablets, and smartwatches. Prices come from a scrape of [Thế Giới Di Động](https://www.thegioididong.com/) and are Ho Chi Minh City reference prices. Checkout is simulated: nothing is charged.
+The customer assistant is a tool loop. The model chooses a tool, Python runs it against PostgreSQL, and the model writes the reply. An admin can open a trace of that loop.
 
-The customer assistant is a tool loop. The model chooses a tool, Python runs it against PostgreSQL, and the model writes the reply. An admin can open a trace of that loop. The chat name on the storefront is Octopus Store.
-
-## Version 1 and version 2
-
-Both versions are storefronts with a customer assistant and an admin assistant. They do not share a database, a payment path, or a catalog.
-
-[Version 1](https://github.com/quocbao2772004/AppleStore/tree/ver1) is the tree that was on `main` through June 2025. The shop is PHP (`code/`, `php -S localhost:9000`). The assistant is a separate FastAPI app (`code/controllers/full_api.py`, port 4070) over MySQL. That app calls an OpenAI-compatible API at `https://api.x.ai/v1`, matches an MB Bank transfer, and sends email after a successful payment. Admin pages cover products, categories, orders, users, and reviews. Weekly reports from March and April 2025 are in `report/`. The branch README still has the screenshots and the run notes. A hosted copy was published at https://baitap3.toanphatnd.com/.
-
-Version 2 is this branch. One Python process renders the pages and runs the tool loop against PostgreSQL. The catalog is phones, laptops, headphones, tablets, and smartwatches. The model chooses a tool, Python runs it, and the model writes the reply from that result. Checkout saves the order and does not move money. An admin opens `/tracing` for the current session. Customer and admin quality are the offline suites in `eval/` (500 and 84 cases). Those runs do not call the model.
-
-| | Version 1 | Version 2 |
-| --- | --- | --- |
-| Where | Branch [`ver1`](https://github.com/quocbao2772004/AppleStore/tree/ver1), tag `v1` | Branch `main` |
-| Catalog | Apple products | Phones, laptops, headphones, tablets, smartwatches |
-| Shop | PHP | Python, server-rendered HTML |
-| Assistant | FastAPI service next to the shop | Tool loop in the same process |
-| Database | MySQL | PostgreSQL |
-| Model endpoint in code | `https://api.x.ai/v1` | OpenAI-compatible `base_url` in `.env` |
-| Payment | MB Bank transfer, then email | Simulated. The order is saved and no money moves |
-| Admin | Catalog, orders, users, reviews, and an admin assistant | Read-only reports, a separate admin assistant, and `/tracing` |
-| Written evaluation | Weekly PDFs in `report/` | 500 customer cases and 84 admin cases in `eval/` |
-
-Version 1’s history is still on `main` under the commits from 2025. The `ver1` branch points at that tree, so its image paths and `Readme.md` stay as they were.
+This branch is version 2. Version 1, Apple Store Online, is compared in [`VERSIONS.md`](VERSIONS.md). A public demo of this version runs on AWS at https://octopus-store.solanai.us/.
 
 ## A traced customer turn
 
@@ -187,6 +165,8 @@ Metric definitions are in [`eval/client/README.md`](eval/client/README.md) and [
 | [`api/suggest.py`](api/suggest.py) | Search-box suggestions |
 | [`scraper/`](scraper/) | Catalog crawl. It does not serve the shop |
 | [`docs/`](docs/) | Trace screenshots used above |
+| [`VERSIONS.md`](VERSIONS.md) | Version 1 compared with this store |
+| [`deploy/aws/`](deploy/aws/) | AWS demo: bootstrap and operator notes |
 
 ```bash
 .venv/bin/python backend/test_agent.py
@@ -195,9 +175,17 @@ Metric definitions are in [`eval/client/README.md`](eval/client/README.md) and [
 
 Those two commands do not call the API and do not write an order.
 
-## Run
+## Deployed on AWS
 
-The AWS demo notes are in [`deploy/aws/README.md`](deploy/aws/README.md).
+The demo is https://octopus-store.solanai.us/. It is this same store, not a second codebase.
+
+One EC2 `t4g.small` in `ap-southeast-1` runs Ubuntu 24.04. PostgreSQL 18 is on that machine. The app listens on `127.0.0.1:8765` under systemd. Caddy terminates HTTPS and proxies to that port. Cloudflare proxies the `octopus-store` name. The security group accepts TCP 80 and 443. Administration is AWS Systems Manager. SSH is not open. The EBS volume is encrypted.
+
+Catalog rows, product images, and the demo customer accounts were copied from the local machine. Local orders and sessions were not. Checkout on the site is still simulated. The model key lives on the instance, outside this repository. If that call fails, the page uses the offline router.
+
+The instance is on the AWS Free Plan. The site stops when that plan or its credit ends. The model API is a separate provider and is not covered by the AWS credit. Resource ids, the bootstrap script, and the operator commands are in [`deploy/aws/README.md`](deploy/aws/README.md).
+
+## Run
 
 Local PostgreSQL, database `tgdd_products`.
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cửa hàng Form.
+"""Cửa hàng Octopus Store.
 
 Chạy: .venv/bin/python backend/server.py
 Giao diện người dùng nằm ở frontend/. Trang, đăng nhập và đơn hàng nằm ở file này.
@@ -673,7 +673,7 @@ def layout(title, body, bag_count, current=None, home=False, admin=False):
 <a class="skip" href="#content">Tới nội dung</a>
 <header class="{header_class}">
   <nav class="gn" aria-label="{header_label}">
-    <a class="brand" href="{brand_href}" aria-label="Form"><svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M32 4c-11 0-19 8.2-19 18.2 0 6.4 3.4 12 8.6 15.2-1.2.5-2.4 1.1-3.4 1.8-6.2 3.6-10.6 8.8-12.6 14.4-1.2 3.2 2.2 5.6 4.6 3.4 2.6-2.4 4.6-6.2 7.2-8.2-.2 2.2-.2 4.6 0 7 .4 3.6 4.8 4.2 5.8.8.8-2.6 1.2-5.4 1.2-7.8h1.2c0 2.6.4 5.4 1.2 8 1 3.4 5.4 2.8 5.8-.8.2-2.4.2-4.8 0-7 2.6 2 4.6 5.8 7.2 8.2 2.4 2.2 5.8-.2 4.6-3.4-2-5.6-6.4-10.8-12.6-14.4-1-.7-2.2-1.3-3.4-1.8 5.2-3.2 8.6-8.8 8.6-15.2C51 12.2 43 4 32 4zm-7.2 16.2a3.2 3.2 0 1 1 0 6.4 3.2 3.2 0 0 1 0-6.4zm14.4 0a3.2 3.2 0 1 1 0 6.4 3.2 3.2 0 0 1 0-6.4z"/></svg></a>{shop_search}{shop_actions}
+    <a class="brand" href="{brand_href}" aria-label="Octopus Store"><svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M32 4c-11 0-19 8.2-19 18.2 0 6.4 3.4 12 8.6 15.2-1.2.5-2.4 1.1-3.4 1.8-6.2 3.6-10.6 8.8-12.6 14.4-1.2 3.2 2.2 5.6 4.6 3.4 2.6-2.4 4.6-6.2 7.2-8.2-.2 2.2-.2 4.6 0 7 .4 3.6 4.8 4.2 5.8.8.8-2.6 1.2-5.4 1.2-7.8h1.2c0 2.6.4 5.4 1.2 8 1 3.4 5.4 2.8 5.8-.8.2-2.4.2-4.8 0-7 2.6 2 4.6 5.8 7.2 8.2 2.4 2.2 5.8-.2 4.6-3.4-2-5.6-6.4-10.8-12.6-14.4-1-.7-2.2-1.3-3.4-1.8 5.2-3.2 8.6-8.8 8.6-15.2C51 12.2 43 4 32 4zm-7.2 16.2a3.2 3.2 0 1 1 0 6.4 3.2 3.2 0 0 1 0-6.4zm14.4 0a3.2 3.2 0 1 1 0 6.4 3.2 3.2 0 0 1 0-6.4z"/></svg></a>{shop_search}{shop_actions}
   </nav>{shop_categories}
 </header>
 {body}
@@ -986,7 +986,7 @@ def render_home(conn, bag_count):
     halves = [(item, tone) for item, tone in halves if item]
     if not wide and not halves:
         empty = '<main id="content" class="page"><h1>Danh mục đang trống.</h1></main>'
-        return layout("Form", empty, bag_count, home=True)
+        return layout("Octopus Store", empty, bag_count, home=True)
     chapters = "".join(banner(item, primary=(index == 0), tone=tone) for index, (item, tone) in enumerate(wide))
     mosaic = "".join(split_tile(item, tone) for item, tone in halves)
     body = f"""<main id="content">
@@ -994,7 +994,7 @@ def render_home(conn, bag_count):
       {chapters}
       <section class="mosaic" id="mosaic">{mosaic}</section>
     </main>"""
-    return layout("Form", body, bag_count, home=True)
+    return layout("Octopus Store", body, bag_count, home=True)
 
 
 def brand_nav(category, brands, selected_slug=None):
@@ -3280,7 +3280,7 @@ def render_assistant(inner, question=""):
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "Form/1.0"
+    server_version = "OctopusStore/1.0"
 
     def do_GET(self):
         parsed = urlparse(self.path)
@@ -4230,5 +4230,5 @@ if __name__ == "__main__":
     load_color_sources()
     threading.Thread(target=prebuild_cutouts, name="cutouts", daemon=True).start()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"Form đang chạy tại http://{HOST}:{PORT}", flush=True)
+    print(f"Octopus Store đang chạy tại http://{HOST}:{PORT}", flush=True)
     server.serve_forever()

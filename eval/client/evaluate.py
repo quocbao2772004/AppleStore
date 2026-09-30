@@ -1,4 +1,4 @@
-"""Đánh giá offline trợ lý Form.
+"""Đánh giá offline trợ lý Octopus Store.
 
 Chạy từ thư mục gốc:
 
@@ -899,7 +899,7 @@ def write_reports(summary, results):
         for row in results:
             handle.write(json.dumps(row, ensure_ascii=False) + "\n")
     lines = [
-        "# Đánh giá offline trợ lý Form",
+        "# Đánh giá offline trợ lý Octopus Store",
         "",
         "Lần chạy này không gọi API và không tạo đơn. Router chọn tool theo hành động của câu. Khách vẫn thấy tối đa 4 máy.",
         "",

@@ -178,7 +178,7 @@ def _ask_model(conn, question, key):
         {
             "role": "system",
             "content": (
-                "Bạn là trợ lý quản trị cửa hàng Form. Trả lời tiếng Việt, ngắn, đủ số. "
+                "Bạn là trợ lý quản trị cửa hàng Octopus Store. Trả lời tiếng Việt, ngắn, đủ số. "
                 "Chỉ dùng số liệu từ tool. Không bịa. Không sửa dữ liệu và không đặt hàng. "
                 "Tổng quan: store_summary. Bán chạy hoặc doanh thu: sales_report. "
                 "Đơn đã hủy không tính vào bán chạy. period là today, 7d, 30d hoặc all. "
