@@ -1,12 +1,12 @@
-"""Offline gate used by route() for eval and for the no-API fallback.
+"""Offline gate used by route() for eval, the no-API fallback, and catalog intent.
 
-The live chat does not consult this file. With an API key, the model chooses
-the tool and Python only executes it.
+Warranty questions are chosen in the live graph before route() runs. This file
+does not call the model, LangGraph, or Qdrant.
 """
 
 import re
 
-from .slots import _signals
+from .slots import _signals, budget_stretch
 
 CHAT_REPLY = (
     "Mình là trợ lý của Octopus Store. "
@@ -54,7 +54,7 @@ _SIGNAL_KEYS = (
 def has_catalog_signal(question):
     """True when this sentence itself names a product, a price, or an order id."""
     signal = _signals(question)
-    if signal.get("specific") or signal.get("priorities"):
+    if signal.get("specific") or signal.get("priorities") or signal.get("excluded_brands") or budget_stretch(question):
         return True
     return any(signal.get(key) for key in _SIGNAL_KEYS)
 

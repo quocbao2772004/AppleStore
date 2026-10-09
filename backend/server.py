@@ -12,6 +12,7 @@ import json
 import os
 import re
 import secrets
+import socket
 import sys
 import threading
 import time
@@ -19,6 +20,7 @@ import unicodedata
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 import urllib.request
+import urllib.error
 from contextvars import ContextVar
 from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -300,6 +302,38 @@ def cut_edges(image):
         if alpha == 0 or min(red, green, blue) < 236:
             continue
         ImageDraw.floodfill(image, (x, y), (red, green, blue, 0), thresh=16)
+    return _drop_white_fringe(image)
+
+
+def _drop_white_fringe(image):
+    # Chỉ xóa pixel gần trắng đang chạm vùng trong suốt. Thân máy trắng ở bên trong được giữ.
+    pixels = image.load()
+    width, height = image.size
+    neighbors = (
+        (1, 0), (-1, 0), (0, 1), (0, -1),
+        (1, 1), (1, -1), (-1, 1), (-1, -1),
+    )
+    for _pass in range(2):
+        clear = []
+        for y in range(height):
+            for x in range(width):
+                red, green, blue, alpha = pixels[x, y]
+                if alpha == 0:
+                    continue
+                darkest = min(red, green, blue)
+                if darkest < 176 or max(red, green, blue) - darkest > 36:
+                    continue
+                for dx, dy in neighbors:
+                    nx = x + dx
+                    ny = y + dy
+                    if 0 <= nx < width and 0 <= ny < height and pixels[nx, ny][3] == 0:
+                        clear.append((x, y))
+                        break
+        if not clear:
+            break
+        for x, y in clear:
+            red, green, blue, _alpha = pixels[x, y]
+            pixels[x, y] = (red, green, blue, 0)
     return image
 
 
@@ -408,8 +442,9 @@ def ready_cutout(item):
     if not source:
         return item
     name = cutout_name(source)
-    if (CUTOUT_ROOT / name).is_file():
-        item["image"] = f"/cutout/{name}"
+    path = CUTOUT_ROOT / name
+    if path.is_file():
+        item["image"] = f"/cutout/{name}?v={int(path.stat().st_mtime)}"
     return item
 
 
@@ -547,22 +582,48 @@ def dump_bag(bag):
     return ",".join(f"{ident}:{qty}" for ident, qty in bag if qty > 0)
 
 
+BAG_ICON = (
+    '<svg class="bag-icon" viewBox="0 0 16 20" aria-hidden="true">'
+    '<path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round" '
+    'd="M3.2 6.2h9.6c.66 0 1.2.54 1.2 1.2v9.3c0 .66-.54 1.2-1.2 1.2H3.2c-.66 0-1.2-.54-1.2-1.2V7.4c0-.66.54-1.2 1.2-1.2z"/>'
+    '<path fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" '
+    'd="M5.3 6.1V4.7a2.7 2.7 0 0 1 5.4 0V6.1"/>'
+    '</svg>'
+)
+def robot_tag(size, extra=""):
+    attrs = (
+        'class="robot-face" color="#1d1d1f" auto-sleep="0" '
+        'press-squeeze="false" antenna-drag="false" aria-hidden="true"'
+    )
+    suffix = (" " + extra) if extra else ""
+    # Light-DOM face stays visible until the custom element attaches its shadow.
+    face = (
+        '<svg class="robot-fallback" viewBox="0 0 64 64" aria-hidden="true">'
+        '<rect x="8" y="8" width="48" height="48" rx="16" fill="#1d1d1f"/>'
+        '<ellipse cx="24" cy="34" rx="6" ry="7" fill="#fff"/>'
+        '<ellipse cx="40" cy="34" rx="6" ry="7" fill="#fff"/>'
+        "</svg>"
+    )
+    return f'<agent-robot-avatar {attrs} size="{int(size)}"{suffix}>{face}</agent-robot-avatar>'
+
+
+OCTOPUS_MASCOT = robot_tag(46, 'id="octopus-mascot" data-state="idle"')
 BOT_MARK = (
-    '<span class="av av-bot" aria-hidden="true"><svg viewBox="0 0 64 64">'
-    '<path fill="currentColor" d="M32 6c-10 0-17 7-17 16 0 5.6 3 10.6 7.6 13.4-1 .4-2 1-2.8 1.5'
-    '-5.4 3.2-9.2 7.6-11 12.6-1 2.8 2 4.8 4 3 2.2-2 4-5.4 6.2-7.2-.2 2-.2 4 0 6 .4 3.2 4.2 3.6 5 0'
-    ' .6-2.2 1-4.6 1-6.8h1c0 2.2.4 4.6 1 6.8.8 3.6 4.6 3.2 5-.8.2-2 .2-4 0-6 2.2 1.8 4 5.2 6.2 7.2'
-    ' 2 1.8 5-.2 4-3-1.8-5-5.6-9.4-11-12.6-.8-.5-1.8-1.1-2.8-1.5C46 32.6 49 27.6 49 22 49 13 42 6 32 6z'
-    'm-6.4 14.2a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6zm12.8 0a2.8 2.8 0 1 1 0 5.6 2.8 2.8 0 0 1 0-5.6z"/>'
-    '</svg></span>'
+    f'<span class="av av-bot" aria-hidden="true">{robot_tag(32)}</span>'
 )
 
 
-def layout(title, body, bag_count, current=None, home=False, admin=False):
+def layout(title, body, bag_count, current=None, home=False, admin=False, show_reasons=False):
     count = f'<span class="bag-count">{bag_count}</span>' if bag_count else ""
+    nav_items = [("/", "Trang chủ", current == "home")]
+    nav_items.extend((f"/c/{key}", label, key == current) for key, label in category_pairs())
+    nav_items.extend((
+        ("/gioi-thieu", "Giới thiệu", current == "about"),
+        ("/lien-he", "Liên hệ", current == "contact"),
+    ))
     links = "".join(
-        f'<a href="/c/{esc(key)}"{current_attr(key == current)}>{esc(label)}</a>'
-        for key, label in category_pairs()
+        f'<a href="{esc(href)}"{current_attr(active)}>{esc(label)}</a>'
+        for href, label, active in nav_items
     )
     home_attr = ' data-home="1"' if home else ""
     if admin:
@@ -570,11 +631,10 @@ def layout(title, body, bag_count, current=None, home=False, admin=False):
     user = CURRENT_USER.get()
     if user:
         admin_link = '<a class="nav-chip" href="/admin">Quản trị</a>' if user["role"] == "admin" else ""
-        tracing_link = '<a class="nav-chip" href="/tracing">Tracing</a>' if user["role"] == "admin" else ""
         account = (
             f'<a class="nav-chip" href="/account">Tài khoản</a>'
             f'<a class="nav-chip" href="/orders">Đơn hàng</a>'
-            f'{tracing_link}{admin_link}'
+            f'{admin_link}'
             '<form class="inline-form" method="post" action="/logout"><button class="nav-chip" type="submit">Thoát</button></form>'
         )
     else:
@@ -587,7 +647,7 @@ def layout(title, body, bag_count, current=None, home=False, admin=False):
     shop_actions = "" if admin else f"""
     <div class="gn-actions">
       <span class="account">{account}</span>
-      <a class="icon-btn bag-link" href="/bag" aria-label="Túi hàng, {bag_count} sản phẩm">Túi{count}</a>
+      <a class="icon-btn bag-link" href="/bag" aria-label="Túi hàng, {bag_count} sản phẩm">{BAG_ICON}{count}</a>
     </div>"""
     bot_avatar = BOT_MARK
     if user:
@@ -620,16 +680,36 @@ def layout(title, body, bag_count, current=None, home=False, admin=False):
     ) if user else ""
     assistant_pop = f"""
 <template id="bot-avatar">{bot_avatar}</template>
-<button class="assistant-fab" id="open-assistant" type="button" aria-label="Mở trợ lý" aria-expanded="false" aria-controls="assistant">
-  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 6h14v9H8l-3 3z"/></svg>
-</button>
+<div class="assistant-launch">
+  {quick_contact_markup()}
+  <div class="assistant-row">
+    <span class="assistant-caption" aria-hidden="true">Trợ lý AI</span>
+    <span class="assistant-fab-wrap">
+      <button class="assistant-fab" id="open-assistant" type="button" aria-label="Mở trợ lý AI, đang trực tuyến" aria-expanded="false" aria-controls="assistant">
+        {robot_tag(64)}
+      </button>
+      <span class="online-dot" aria-hidden="true"></span>
+    </span>
+  </div>
+</div>
 <aside id="assistant" class="assistant-pop" hidden aria-labelledby="assistant-title">
   <div class="assistant-bar">
-    <div class="assistant-who">{bot_avatar}<div><h2 id="assistant-title">Trợ lý</h2><p>Hỏi máy hoặc đặt hàng</p></div></div>
+    <div class="assistant-who">{OCTOPUS_MASCOT}<div><h2 id="assistant-title">Octopus Store</h2><p id="assistant-status">Trợ lý AI</p></div></div>
     <div class="assistant-tools">{clear_button}<button type="button" id="assistant-close" aria-label="Đóng">×</button></div>
   </div>
   {assistant_body}
-</aside>"""
+</aside>
+<dialog id="assistant-clear-dialog" class="admin-modal admin-modal-confirm">
+  <div class="admin-modal-card">
+    <h2 id="assistant-clear-title">Xóa lịch sử chat?</h2>
+    <p class="note">Các tin trong phiên này sẽ mất. Lời chào vẫn giữ lại.</p>
+    <p id="assistant-clear-error" class="assistant-confirm-error" hidden>Chưa xóa được. Thử lại.</p>
+    <div class="admin-modal-actions">
+      <button type="button" class="quiet" id="assistant-clear-cancel">Hủy</button>
+      <button type="button" class="danger" id="assistant-clear-confirm">Xóa</button>
+    </div>
+  </div>
+</dialog>"""
     shop_categories = "" if admin else f"""
   <nav class="sub" aria-label="Nhóm sản phẩm">
     <div class="sub-links">{links}</div>
@@ -638,12 +718,13 @@ def layout(title, body, bag_count, current=None, home=False, admin=False):
     header_label = "Quản trị" if admin else "Cửa hàng"
     header_class = "top admin-top" if admin else "top"
     account_link = '<li><a href="/account">Thông tin cá nhân</a></li>' if user else ""
+    reasons = store_reasons() if show_reasons and not admin else ""
     footer = "" if admin else f"""
 <footer class="footer">
   <nav class="footer-nav" aria-label="Chân trang">
     <div>
       <h2>Cửa hàng</h2>
-      <ul>{''.join(f'<li><a href="/c/{esc(key)}">{esc(label)}</a></li>' for key, label in category_pairs())}<li><a href="/lien-he">Liên hệ</a></li></ul>
+      <ul><li><a href="/">Trang chủ</a></li>{''.join(f'<li><a href="/c/{esc(key)}">{esc(label)}</a></li>' for key, label in category_pairs())}<li><a href="/gioi-thieu">Giới thiệu</a></li><li><a href="/lien-he">Liên hệ</a></li></ul>
     </div>
     <div>
       <h2>Túi</h2>
@@ -655,10 +736,10 @@ def layout(title, body, bag_count, current=None, home=False, admin=False):
     </div>
     <div>
       <h2>Nguồn</h2>
-      <ul><li><span>Giá niêm yết tham chiếu tại Thành phố Hồ Chí Minh.</span></li></ul>
+      <ul><li><span>Giá niêm yết tham chiếu tại Hà Nội.</span></li></ul>
     </div>
   </nav>
-  <p class="legal">Đơn hàng được ghi trên hệ thống, chưa trừ tiền thật. {"Quản trị local: admin@form.local / form-admin. " if DEMO_MODE else ""}Nguồn sản phẩm: thegioididong.com.</p>
+  <p class="legal">© 2026 Octopus store. All rights reserved.</p>
 </footer>"""
     return f"""<!DOCTYPE html>
 <html lang="vi">
@@ -667,19 +748,30 @@ def layout(title, body, bag_count, current=None, home=False, admin=False):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="light">
 <title>{esc(title)}</title>
-<link rel="stylesheet" href="/frontend/store.css?v=57">
+<link rel="icon" href="/frontend/favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="/frontend/store.css?v=97">
 </head>
 <body{home_attr}>
 <a class="skip" href="#content">Tới nội dung</a>
 <header class="{header_class}">
   <nav class="gn" aria-label="{header_label}">
-    <a class="brand" href="{brand_href}" aria-label="Octopus Store"><svg class="logo" viewBox="0 0 64 64" aria-hidden="true"><path fill="currentColor" fill-rule="evenodd" d="M32 4c-11 0-19 8.2-19 18.2 0 6.4 3.4 12 8.6 15.2-1.2.5-2.4 1.1-3.4 1.8-6.2 3.6-10.6 8.8-12.6 14.4-1.2 3.2 2.2 5.6 4.6 3.4 2.6-2.4 4.6-6.2 7.2-8.2-.2 2.2-.2 4.6 0 7 .4 3.6 4.8 4.2 5.8.8.8-2.6 1.2-5.4 1.2-7.8h1.2c0 2.6.4 5.4 1.2 8 1 3.4 5.4 2.8 5.8-.8.2-2.4.2-4.8 0-7 2.6 2 4.6 5.8 7.2 8.2 2.4 2.2 5.8-.2 4.6-3.4-2-5.6-6.4-10.8-12.6-14.4-1-.7-2.2-1.3-3.4-1.8 5.2-3.2 8.6-8.8 8.6-15.2C51 12.2 43 4 32 4zm-7.2 16.2a3.2 3.2 0 1 1 0 6.4 3.2 3.2 0 0 1 0-6.4zm14.4 0a3.2 3.2 0 1 1 0 6.4 3.2 3.2 0 0 1 0-6.4z"/></svg></a>{shop_search}{shop_actions}
+    <a class="brand" href="{brand_href}" aria-label="Octopus Store"><img class="logo" src="/frontend/logo.png" alt=""><span class="brand-name">Octopus Store</span></a>{shop_search}{shop_actions}
   </nav>{shop_categories}
 </header>
 {body}
+{"" if admin else '''<aside class="compare-dock" id="compare-dock" hidden aria-label="So sánh">
+  <p class="compare-note" id="compare-note" hidden></p>
+  <div class="compare-slots" id="compare-slots"></div>
+  <div class="compare-actions">
+    <a class="buy" id="compare-go" href="/so-sanh">Xem cấu hình</a>
+    <button type="button" class="quiet" id="compare-clear">Xóa</button>
+  </div>
+</aside>'''}
 {assistant_pop}
+{reasons}
 {footer}
-<script src="/frontend/store.js" defer></script>
+<script type="module" src="/frontend/agent-robot-avatar/agent-robot-avatar.js?v=97"></script>
+<script src="/frontend/store.js?v=97" defer></script>
 </body>
 </html>"""
 
@@ -780,11 +872,186 @@ def buy_form(product_id, label="Mua"):
     </form>"""
 
 
-def banner(item, primary=False, tone="ink"):
+def line_banner(item, eyebrow):
+    if not item:
+        return ""
+    title = item.get("headline") or item.get("title") or ""
+    return f"""<div class="line-slide"><a class="line-banner" href="/p/{int(item["id"])}">
+      <div>
+        <p class="eyebrow">{esc(eyebrow)}</p>
+        <h2>{esc(title)}</h2>
+        <p>{esc(item.get("line") or "")}</p>
+        <span class="more">Tìm hiểu thêm ›</span>
+      </div>
+      <img src="{esc(item["image"])}" alt="{esc(item["alt"])}">
+    </a></div>"""
+
+
+CATEGORY_BANNERS = {
+    "phone": (
+        ("%iphone 18 pro%", "%max%", "iPhone 18 Pro", "Pro hơn hẳn.", "iPhone"),
+        ("%iphone 18 pro max%", None, "iPhone 18 Pro Max", "Cùng Pro. Màn hình lớn hơn.", "iPhone"),
+        ("%iphone duo%", None, "iPhone Duo", "Mở ra một màn hình.", "iPhone"),
+        ("%iphone air%", None, "iPhone Air", "Mỏng nhẹ.", "iPhone"),
+    ),
+    "laptop": (
+        ("%macbook air 15 inch m5%35w%", "%24gb%", "MacBook Air 15 inch M5 35W", "Mỏng. Nhẹ. Làm được việc dài.", "MacBook"),
+        ("%macbook pro 14 inch m5 16gb%", None, "MacBook Pro 14 inch M5", "Mỏng. Đủ cho một ngày dài.", "MacBook"),
+        ("%zenbook duo%", None, "Asus Zenbook DUO", "Hai màn hình.", "Asus"),
+        ("%thinkpad x1 carbon%", None, "ThinkPad X1 Carbon", "Mỏng cho công việc.", "Lenovo"),
+    ),
+    "tablet": (
+        ("%ipad pro m5 13%", None, "iPad Pro M5 13 inch", "Màn hình lớn, mang theo được.", "iPad"),
+        ("%ipad air m4 13%", None, "iPad Air M4 13 inch", "Mỏng. Màn hình lớn.", "iPad"),
+        ("%tab s11 ultra%", None, "Galaxy Tab S11 Ultra", "Màn hình rộng.", "Samsung"),
+        ("%xiaomi pad 8 pro%", None, "Xiaomi Pad 8 Pro", "Dòng Pro của Xiaomi.", "Xiaomi"),
+    ),
+    "headphones": (
+        ("%airpods max 2%", None, "AirPods Max 2", "Nghe rõ. Đeo cả ngày.", "AirPods"),
+        ("%wh1000xm6%", "%imei%", "Sony WH-1000XM6", "Chụp tai. Nghe rõ.", "Sony"),
+        ("%airpods pro 3%", None, "AirPods Pro 3", "Nhét tai. Gọn.", "AirPods"),
+        ("%momentum 5%", None, "Sennheiser Momentum 5", "Chụp tai.", "Sennheiser"),
+    ),
+    "smartwatch": (
+        ("%apple watch ultra 4%", None, "Apple Watch Ultra 4", "Đeo cả ngày.", "Apple Watch"),
+        ("%galaxy watch ultra 2%", None, "Galaxy Watch Ultra 2", "Nhịp trên cổ tay.", "Samsung"),
+        ("%apple watch series 12 gps 46mm%", "%cellular%", "Apple Watch Series 12", "Nhìn đã thấy giờ.", "Apple Watch"),
+        ("%apple watch se 3 gps 44mm%", "%cellular%", "Apple Watch SE 3", "Gọn trên cổ tay.", "Apple Watch"),
+    ),
+}
+
+
+def line_rail_markup(slides):
+    if not slides:
+        return ""
+    arrows = ""
+    if len(slides) > 1:
+        arrows = """<div class="line-arrows">
+        <button type="button" data-loop-for="line-rail" data-loop-dir="-1" aria-label="Banner trước">‹</button>
+        <button type="button" data-loop-for="line-rail" data-loop-dir="1" aria-label="Banner sau">›</button>
+      </div>"""
+    return f'<div class="line-rail-wrap"><div class="line-rail" id="line-rail" data-loop data-auto>{"".join(slides)}</div>{arrows}</div>'
+
+
+def category_line_rail(conn, category):
+    slides = []
+    for include, exclude, headline, line, eyebrow in CATEGORY_BANNERS.get(category, ()):
+        item = spotlight(conn, include, exclude, headline, line, category)
+        if item:
+            slides.append(line_banner(item, eyebrow))
+    return line_rail_markup(slides)
+
+
+STORE_REASONS = (
+    {
+        "kicker": "Bảo hành",
+        "title": "Đọc đúng điều khoản hãng.",
+        "body": "Hỏi bảo hành, trợ lý lấy điều khoản của đúng hãng đó.",
+        "detail": "Cửa hàng lưu điều khoản bảo hành theo từng hãng. Trợ lý chỉ đọc đoạn của hãng bạn hỏi, không lấy điều khoản hãng khác. Thời hạn tùy hãng và từng loại máy.",
+        "href": "",
+        "link": "Hỏi trợ lý ›",
+        "action": "assistant",
+        "image": "/frontend/reasons/warranty.png",
+        "alt": "Khiên bảo hành",
+    },
+    {
+        "kicker": "Giao hàng",
+        "title": "Giao trên cả nước.",
+        "body": "Hẹn buổi nhận khi đặt.",
+        "detail": "Ghi địa chỉ lúc chốt. Giao trên cả nước. Buổi nhận sớm nhất là ngày hôm sau: sáng 8–12, chiều 13–17, tối 18–21.",
+        "href": "/lien-he",
+        "link": "Hỏi cửa hàng ›",
+        "action": "",
+        "image": "/frontend/reasons/ship.png",
+        "alt": "Thùng giao hàng",
+    },
+    {
+        "kicker": "Giá",
+        "title": "Giá niêm yết phải chăng.",
+        "body": "Tham chiếu tại Hà Nội, ghi trên từng máy.",
+        "detail": "Mỗi sản phẩm có giá của chính nó, niêm yết tham chiếu tại Hà Nội. Có thể xếp giá thấp hoặc cao để chọn, và so sánh tối đa 4 máy cùng nhóm.",
+        "href": "/shop",
+        "link": "Xem sản phẩm ›",
+        "action": "",
+        "image": "/frontend/reasons/price.png",
+        "alt": "Thẻ giá để trống",
+    },
+    {
+        "kicker": "Trợ lý AI",
+        "title": "Mua có trợ lý đi cùng.",
+        "body": "Nói nhu cầu, trợ lý tìm máy đang có.",
+        "detail": "Trợ lý AI nghe nhu cầu và tầm giá, rồi tìm trong kho đang bán. Màu chỉ hỏi khi đặt.",
+        "href": "",
+        "link": "Mở trợ lý ›",
+        "action": "assistant",
+        "image": "/frontend/reasons/assistant.png",
+        "alt": "Robot trợ lý",
+    },
+    {
+        "kicker": "Thanh toán",
+        "title": "Thanh toán gọn lúc chốt.",
+        "body": "Trả khi nhận, hoặc chuyển khoản.",
+        "detail": "Lúc đặt, chọn thanh toán khi nhận hàng, hoặc chuyển khoản và xem mã trên máy. Hoá đơn gửi tới email nhận hàng.",
+        "href": "/bag",
+        "link": "Đến túi hàng ›",
+        "action": "",
+        "image": "/frontend/reasons/pay.png",
+        "alt": "Điện thoại và xu",
+    },
+)
+
+
+def store_reasons():
+    cards = []
+    for card in STORE_REASONS:
+        cards.append(
+            f'<button type="button" class="reason-card" data-reason-open'
+            f' data-kicker="{esc(card["kicker"])}" data-title="{esc(card["title"])}"'
+            f' data-detail="{esc(card["detail"])}" data-href="{esc(card["href"])}"'
+            f' data-link="{esc(card["link"])}" data-action="{esc(card["action"])}">'
+            f'<span class="reason-kicker">{esc(card["kicker"])}</span>'
+            f'<strong>{esc(card["title"])}</strong>'
+            f'<span class="reason-body">{esc(card["body"])}</span>'
+            f'<img class="reason-photo" src="{esc(card["image"])}" alt="{esc(card["alt"])}">'
+            f'<span class="reason-plus" aria-hidden="true">'
+            f'<svg viewBox="0 0 16 16"><path fill="currentColor" d="M7 2h2v12H7zM2 7h12v2H2z"/></svg>'
+            f'</span>'
+            f'</button>'
+        )
+    return (
+        '<section class="reason-band" aria-label="Vì sao mua tại Octopus Store">'
+        '<div class="reason-head"><h2>Vì sao mua tại Octopus Store.</h2>'
+        '<div class="reason-tools">'
+        '<div class="reason-arrows">'
+        '<button type="button" data-reason-dir="-1" aria-label="Thẻ trước">‹</button>'
+        '<button type="button" data-reason-dir="1" aria-label="Thẻ sau">›</button>'
+        '</div>'
+        '<a href="/lien-he">Liên hệ ›</a></div></div>'
+        f'<div class="reason-rail" id="reason-rail" data-reason-rail>{"".join(cards)}</div>'
+        '</section>'
+        '<dialog id="reason-dialog" class="reason-dialog" aria-labelledby="reason-title">'
+        '<div class="reason-modal">'
+        '<button type="button" class="reason-close" data-reason-close aria-label="Đóng">×</button>'
+        '<p class="reason-kicker" id="reason-kicker"></p>'
+        '<h2 id="reason-title"></h2>'
+        '<p class="reason-copy" id="reason-copy"></p>'
+        '<a class="reason-more-link" id="reason-link" href="/lien-he">Tìm hiểu thêm ›</a>'
+        '</div></dialog>'
+    )
+
+
+
+def banner(item, primary=False, tone="ink", brand=""):
     heading = "h1" if primary else "h2"
     line = item.get("line") or LINES.get(item["category"], "")
     name = item.get("headline") or item["title"]
-    return f"""<section class="banner stage-wide tone-{esc(tone)}">
+    hero = " home-hero" if brand else ""
+    brand_html = (
+        f'<p class="hero-brand"><img class="hero-logo" src="/frontend/logo.png" alt="">{esc(brand)}</p>'
+        if brand else ""
+    )
+    return f"""<section class="banner stage-wide tone-{esc(tone)}{hero}">
+      {brand_html}
       <div class="banner-photo"><img src="{esc(item["image"])}" alt="{esc(item["alt"])}"></div>
       <div class="banner-lockup">
         <div>
@@ -957,10 +1224,10 @@ def build_phone_family(conn, brand_name=None):
         <h2>{esc(title)}</h2>
         {side}
       </div>
-      <div class="family-row" id="family-row">{''.join(family_card(item, tone, color_map.get(item["id"]), thumbs.get(item["id"])) for item, tone in cards)}</div>
+      <div class="family-row" id="family-row" data-loop>{''.join(family_card(item, tone, color_map.get(item["id"]), thumbs.get(item["id"])) for item, tone in cards)}</div>
       <div class="family-arrows">
-        <button type="button" data-family-dir="-1" aria-label="Xem máy phía trước">‹</button>
-        <button type="button" data-family-dir="1" aria-label="Xem máy phía sau">›</button>
+        <button type="button" data-loop-for="family-row" data-loop-dir="-1" aria-label="Xem máy phía trước">‹</button>
+        <button type="button" data-loop-for="family-row" data-loop-dir="1" aria-label="Xem máy phía sau">›</button>
       </div>
     </section>"""
 
@@ -986,15 +1253,23 @@ def render_home(conn, bag_count):
     halves = [(item, tone) for item, tone in halves if item]
     if not wide and not halves:
         empty = '<main id="content" class="page"><h1>Danh mục đang trống.</h1></main>'
-        return layout("Octopus Store", empty, bag_count, home=True)
-    chapters = "".join(banner(item, primary=(index == 0), tone=tone) for index, (item, tone) in enumerate(wide))
+        return layout("Octopus Store", empty, bag_count, current="home", home=True)
+    chapters = "".join(
+        banner(
+            item,
+            primary=(index == 0),
+            tone=tone,
+            brand="Octopus Store" if item.get("headline") == "iPhone Duo" else "",
+        )
+        for index, (item, tone) in enumerate(wide)
+    )
     mosaic = "".join(split_tile(item, tone) for item, tone in halves)
     body = f"""<main id="content">
       <div id="nav-sentinel" aria-hidden="true"></div>
       {chapters}
       <section class="mosaic" id="mosaic">{mosaic}</section>
     </main>"""
-    return layout("Octopus Store", body, bag_count, home=True)
+    return layout("Octopus Store", body, bag_count, current="home", home=True)
 
 
 def brand_nav(category, brands, selected_slug=None):
@@ -1044,8 +1319,9 @@ def render_shop(conn, bag_count, category, query, sort, page, brand_slug_value=N
             hero = spotlight(conn, "%iphone 18 pro%", "%max%", "iPhone 18 Pro", "Pro hơn hẳn.")
         hero = hero or flagship(conn, category)
     family_html = phone_family(conn, selected["name"] if selected else None) if category == "phone" and not query else ""
+    line_html = category_line_rail(conn, category) if not selected and not query else ""
     hero_html = ""
-    if family_html:
+    if line_html or family_html:
         hero = None
     if hero and hero.get("image"):
         hero_html = f"""<a class="cat-banner" href="/p/{hero["id"]}">
@@ -1094,7 +1370,8 @@ def render_shop(conn, bag_count, category, query, sort, page, brand_slug_value=N
     action = shop_href(category, "", "featured", 1, selected["slug"] if selected else None)
     body = f"""<main id="content" class="page shop-page">
       <div id="nav-sentinel" aria-hidden="true"></div>
-      <div class="banner-bleed">{family_html}{hero_html}</div>
+      <div class="banner-bleed">{line_html}{hero_html}</div>
+      {family_html}
       <div class="catalog-center">
       <header class="page-head"><p class="kicker">{esc(category_map()[category] if selected else "Danh mục")}</p><h1>{esc(title)}</h1><p class="note">{esc(note)}</p></header>
       {chips}
@@ -1111,7 +1388,7 @@ def render_shop(conn, bag_count, category, query, sort, page, brand_slug_value=N
       {listing}
       </div>
     </main>"""
-    return layout(f"{title} · {category_map()[category]}" if selected else title, body, bag_count, current=category)
+    return layout(f"{title} · {category_map()[category]}" if selected else title, body, bag_count, current=category, show_reasons=True)
 
 
 def suggest_products(conn, text):
@@ -1145,6 +1422,176 @@ def shop_href(category, query, sort, page, brand_slug_value=None, show_all=False
     if page > 1:
         parts.append(f"page={page}")
     return base + (("?" + "&".join(parts)) if parts else "")
+
+
+def pick_compare(found):
+    kept = []
+    category = None
+    mixed = False
+    for ident, cat in found:
+        if category is None:
+            category = cat
+        elif cat != category:
+            mixed = True
+            continue
+        if ident in kept:
+            continue
+        if len(kept) >= 4:
+            continue
+        kept.append(ident)
+    return kept, category, mixed
+
+
+def compare_href(ids):
+    clean = [int(ident) for ident in ids]
+    if not clean:
+        return "/so-sanh"
+    return "/so-sanh?" + "&".join(f"id={ident}" for ident in clean)
+
+
+def compare_markup(products, category_label, note=""):
+    if not products:
+        return """<main id="content" class="page compare-page"><div id="nav-sentinel"></div>
+          <h1>So sánh</h1>
+          <p class="note">Chưa chọn máy. Mở một sản phẩm rồi bấm So sánh.</p>
+          <p><a class="more" href="/c/phone">Xem điện thoại</a></p>
+        </main>"""
+    head = []
+    for product in products:
+        others = [item["id"] for item in products if item["id"] != product["id"]]
+        image = f'<img src="{esc(product["image"])}" alt="">' if product.get("image") else ""
+        head.append(
+            f'<th scope="col"><a class="compare-card" href="/p/{int(product["id"])}"'
+            f' data-compare-id="{int(product["id"])}" data-compare-title="{esc(product["title"])}"'
+            f' data-compare-price="{esc(product["price_label"])}" data-compare-image="{esc(product.get("image") or "")}">'
+            f'{image}<strong>{esc(product["title"])}</strong><span>{esc(product["price_label"])}</span></a>'
+            f'<a class="compare-remove" href="{esc(compare_href(others))}">Bỏ</a></th>'
+        )
+    order = []
+    seen = set()
+    values = []
+    groups_for_name = {}
+    for product in products:
+        bag = {}
+        for group, name, value in product["specs"]:
+            if name not in bag:
+                bag[name] = value
+            if name not in seen:
+                seen.add(name)
+                order.append(name)
+            if group and name not in groups_for_name:
+                groups_for_name[name] = group
+        values.append(bag)
+    rows = []
+    last_group = None
+    span = len(products) + 1
+    blank = "—"
+    for name in order:
+        group = groups_for_name.get(name, "")
+        if group != last_group:
+            rows.append(f'<tr class="compare-group"><th colspan="{span}">{esc(group or "Thông số")}</th></tr>')
+            last_group = group
+        cells = "".join(f"<td>{esc(bag.get(name) or blank)}</td>" for bag in values)
+        rows.append(f'<tr><th scope="row">{esc(name)}</th>{cells}</tr>')
+    more = ""
+    if len(products) < 4 and products[0].get("category"):
+        more = f'<p class="note"><a class="more" href="/c/{esc(products[0]["category"])}">Thêm máy cùng nhóm</a></p>'
+    status = f'<p class="note">{esc(note)}</p>' if note else ""
+    label = category_label or "máy"
+    return f"""<main id="content" class="page compare-page" data-compare-category="{esc(products[0].get("category") or "")}" data-compare-label="{esc(label)}">
+      <div id="nav-sentinel"></div>
+      <h1>So sánh {esc(label.lower())}</h1>
+      <p class="note">Cấu hình chi tiết, tối đa 4 máy cùng nhóm.</p>
+      {status}{more}
+      <div class="compare-wrap"><table class="compare">
+        <thead><tr><th></th>{"".join(head)}</tr></thead>
+        <tbody>{"".join(rows)}</tbody>
+      </table></div>
+    </main>"""
+
+
+def load_compare(conn, ids):
+    clean = []
+    for ident in ids:
+        if isinstance(ident, int) or str(ident).isdigit():
+            value = int(ident)
+            if value not in clean:
+                clean.append(value)
+        if len(clean) == 8:
+            break
+    if not clean:
+        return [], "", False
+    rows = conn.execute(
+        """
+        SELECT source_product_id, category, name, price_vnd
+        FROM products
+        WHERE source_product_id = ANY(%s) AND is_live_catalog
+        """,
+        (clean,),
+    ).fetchall()
+    by_id = {row[0]: row for row in rows}
+    found = [(ident, by_id[ident][1]) for ident in clean if ident in by_id]
+    kept, category, mixed = pick_compare(found)
+    if not kept:
+        return [], "", mixed
+    photos = covers(conn, kept)
+    spec_rows = conn.execute(
+        """
+        SELECT product_id, coalesce(group_name, ''), spec_name, spec_value
+        FROM product_specifications
+        WHERE product_id = ANY(%s)
+        ORDER BY display_order, spec_name
+        """,
+        (kept,),
+    ).fetchall()
+    grouped = {ident: [] for ident in kept}
+    for product_id, group, name, value in spec_rows:
+        if not name:
+            continue
+        grouped[product_id].append((group or "", name, re.sub(r"\s+", " ", value or "").strip()))
+    products = []
+    for ident in kept:
+        row = by_id[ident]
+        photo = photos.get(ident)
+        products.append({
+            "id": ident,
+            "category": row[1],
+            "title": display_name(row[2]),
+            "price_label": money(row[3]),
+            "image": photo[0] if photo else "",
+            "specs": grouped.get(ident) or [],
+        })
+    return products, category_map().get(category, ""), mixed
+
+
+def render_compare(conn, bag_count, ids):
+    products, label, mixed = load_compare(conn, ids)
+    note = "Chỉ so sánh được máy cùng nhóm." if mixed else ""
+    current = products[0]["category"] if products else ""
+    return layout("So sánh", compare_markup(products, label, note), bag_count, current=current)
+
+
+def quick_contact_markup():
+    links = (
+        ("qc-zalo", "Zalo", '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M5 6.5A3.5 3.5 0 0 1 8.5 3h7A3.5 3.5 0 0 1 19 6.5v6A3.5 3.5 0 0 1 15.5 16H12l-4 3.2V16H8.5A3.5 3.5 0 0 1 5 12.5z"/></svg>'),
+        ("qc-facebook", "Facebook", '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="currentColor" d="M14.5 8H17V5h-2.5A3.5 3.5 0 0 0 11 8.5V11H8.5v3H11v7h3v-7h2.2l.5-3H14v-2.2c0-.4.4-.8.8-.8z"/></svg>'),
+        ("qc-call", "Gọi ngay", '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M8 3.5h2.2l1.2 3.2-1.6 1a12 12 0 0 0 5.5 5.5l1-1.6 3.2 1.2V15a2 2 0 0 1-2.2 2A15.5 15.5 0 0 1 6 6.7 2 2 0 0 1 8 3.5z"/></svg>'),
+        ("qc-mail", "Email", '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M4 7.5A2.5 2.5 0 0 1 6.5 5h11A2.5 2.5 0 0 1 20 7.5v9a2.5 2.5 0 0 1-2.5 2.5h-11A2.5 2.5 0 0 1 4 16.5z"/><path fill="none" stroke="currentColor" stroke-width="1.8" d="M5 7l7 5 7-5"/></svg>'),
+    )
+    items = "".join(
+        f'<a class="qc-link {klass}" href="/lien-he">{icon}<span>{label}</span></a>'
+        for klass, label, icon in links
+    )
+    return f"""<div class="quick-contact">
+      <div class="quick-menu" id="quick-menu" hidden>{items}</div>
+      <div class="qc-row">
+        <span class="assistant-caption" aria-hidden="true">Liên hệ nhanh</span>
+        <button type="button" class="qc-toggle" aria-expanded="false" aria-controls="quick-menu" aria-label="Mở liên hệ nhanh">
+          <svg class="qc-icon qc-icon-open" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" d="M8 3.5h2.2l1.2 3.2-1.6 1a12 12 0 0 0 5.5 5.5l1-1.6 3.2 1.2V15a2 2 0 0 1-2.2 2A15.5 15.5 0 0 1 6 6.7 2 2 0 0 1 8 3.5z"/></svg>
+          <svg class="qc-icon qc-icon-close" viewBox="0 0 24 24" aria-hidden="true"><path fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" d="M6 6l12 12M18 6L6 18"/></svg>
+        </button>
+      </div>
+    </div>"""
 
 
 def render_product(conn, bag_count, product_id, notice=""):
@@ -1185,6 +1632,14 @@ def render_product(conn, bag_count, product_id, notice=""):
     slug = next((item["slug"] for item in brand_directory(conn, product["category"]) if item["name"] == brand_name), "")
     brand_href = f'/c/{product["category"]}/{slug}' if slug else f'/c/{product["category"]}'
     related = "".join(tile(item, show_brand=False) for item in product["related"])
+    photo = product["images"][0][0] if product["images"] else ""
+    group_label = category_map().get(product["category"], "máy")
+    compare_button = (
+        f'<button type="button" class="compare-btn" id="compare-add"'
+        f' data-id="{int(product["id"])}" data-category="{esc(product["category"])}"'
+        f' data-label="{esc(group_label)}" data-title="{esc(product["title"])}"'
+        f' data-price="{esc(money(product["price"]))}" data-image="{esc(photo)}">So sánh</button>'
+    )
     body = f"""<main id="content" class="page buy-page">
       <div id="nav-sentinel" aria-hidden="true"></div>
       <article>
@@ -1195,7 +1650,7 @@ def render_product(conn, bag_count, product_id, notice=""):
           <p class="price">Từ {esc(money(product["price"]))}</p>
           <p class="note">{"Hết hàng" if product["stock"] <= 0 else f"Còn {product['stock']} máy"}</p>
           {color_swatches(colors, names=True, clickable=True)}
-          <div class="ctas">{buy_form(product["id"], "Thêm vào túi") if product["stock"] > 0 else ""}<a class="more" href="{esc(brand_href)}">Xem {esc(brand_name)}</a></div>
+          <div class="ctas">{buy_form(product["id"], "Thêm vào túi") if product["stock"] > 0 else ""}{compare_button}<a class="more" href="{esc(brand_href)}">Xem {esc(brand_name)}</a></div>
           <p class="note">Giá tham chiếu, chưa gồm phí.</p>
         </header>
         <div class="wide-wrap">
@@ -1311,27 +1766,209 @@ def render_receipt(conn, user, order_id):
     return layout(f"Đơn #{row[0]}", body, 0)
 
 
-def render_contact(user=None, values=None, message="", error=""):
+def about_feature(item, tone):
+    if not item:
+        return ""
+    return (
+        f'<a class="about-feature tone-{esc(tone)}" href="/p/{int(item["id"])}">'
+        f'<p class="eyebrow">{esc(item["headline"])}</p>'
+        f'<h2>{esc(item.get("line") or item["headline"])}</h2>'
+        f'<p class="about-feature-price">Từ {esc(money(item["price"]))}</p>'
+        f'<img src="{esc(item["image"])}" alt="{esc(item["alt"])}">'
+        f"</a>"
+    )
+
+
+def about_groups(conn):
+    groups = []
+    for key, label in category_pairs():
+        picks = []
+        for include, exclude, headline, line, _eyebrow in CATEGORY_BANNERS.get(key, ()):
+            item = spotlight(conn, include, exclude, headline, line, key)
+            if item:
+                picks.append(item)
+        groups.append((key, label, picks))
+    return groups
+
+
+def render_about(bag_count=0):
+    lead = about_feature(None, "ink")
+    mosaic = ""
+    groups_html = "".join(
+        f'<a class="about-cat" href="/c/{esc(key)}">{esc(label)}</a>'
+        for key, label in category_pairs()
+    )
+    try:
+        with connect() as conn:
+            duo = spotlight(conn, "%iphone duo%", None, "iPhone Duo", "Mở ra một màn hình.", "phone")
+            tiles = (
+                spotlight(conn, "%iphone 18 pro%", "%max%", "iPhone 18 Pro", "Pro hơn hẳn.", "phone"),
+                spotlight(conn, "%macbook air 15 inch m5%35w%", "%24gb%", "MacBook Air 15 inch M5", "Mỏng. Nhẹ. Làm được việc dài.", "laptop"),
+                spotlight(conn, "%ipad pro m5 13%", None, "iPad Pro M5 13 inch", "Màn hình lớn, mang theo được.", "tablet"),
+                spotlight(conn, "%airpods max 2%", None, "AirPods Max 2", "Nghe rõ. Đeo cả ngày.", "headphones"),
+            )
+            lead = about_feature(duo, "ink")
+            mosaic = "".join(
+                about_feature(item, tone)
+                for item, tone in zip(tiles, ("paper", "white", "sky", "sand"))
+                if item
+            )
+            blocks = []
+            for key, label, picks in about_groups(conn):
+                if picks:
+                    cards = "".join(
+                        f'<a class="about-pick" href="/p/{int(item["id"])}">'
+                        f'<img src="{esc(item["image"])}" alt="{esc(item["alt"])}">'
+                        f"<strong>{esc(item['headline'])}</strong>"
+                        f"<span>{esc(money(item['price']))}</span></a>"
+                        for item in picks
+                    )
+                else:
+                    cards = f'<a class="about-cat" href="/c/{esc(key)}">{esc(label)}</a>'
+                blocks.append(
+                    f'<section class="about-group">'
+                    f'<div class="about-group-head"><h3>{esc(label)}</h3>'
+                    f'<a href="/c/{esc(key)}">Xem tất cả</a></div>'
+                    f'<div class="about-picks">{cards}</div></section>'
+                )
+            groups_html = "".join(blocks)
+    except Exception:
+        pass
+    mosaic_html = f'<div class="about-mosaic">{mosaic}</div>' if mosaic else ""
+    body = f"""<main id="content" class="about-page">
+      <div id="nav-sentinel"></div>
+      <section class="about-hero">
+        <p class="eyebrow">Giới thiệu</p>
+        <h1>Octopus Store</h1>
+        <p class="about-lead">Cửa hàng điện thoại, laptop, máy tính bảng, tai nghe và đồng hồ. Ảnh dưới đây là máy đang có trong kho.</p>
+        <p class="note">Giá niêm yết tham chiếu tại Hà Nội.</p>
+        <div class="ctas">
+          <a class="buy" href="/c/phone">Xem điện thoại</a>
+          <a class="more" href="/lien-he">Liên hệ cửa hàng</a>
+        </div>
+      </section>
+      {lead}
+      {mosaic_html}
+      <section class="about-block">
+        <p class="eyebrow">Cửa hàng có gì</p>
+        <h2>Các nhóm máy đang bán.</h2>
+        <p class="about-copy">Mỗi nhóm lấy vài máy đặc trưng đang còn hàng. Bấm vào máy để xem cấu hình và giá, hoặc mở cả nhóm.</p>
+        {groups_html}
+      </section>
+      <section class="about-block">
+        <p class="eyebrow">Định hướng</p>
+        <h2>Bốn điều cửa hàng giữ.</h2>
+        <div class="about-pillars">
+          <article>
+            <h3>Sản phẩm</h3>
+            <p>Điện thoại, laptop, máy tính bảng, tai nghe và đồng hồ. Mỗi nhóm có trang riêng, chỉ hiện máy đang bán.</p>
+          </article>
+          <article>
+            <h3>Giá</h3>
+            <p>Giá niêm yết tham chiếu tại Hà Nội, ghi trên từng sản phẩm.</p>
+          </article>
+          <article>
+            <h3>Đặt hàng</h3>
+            <p>Thêm máy vào túi. Khi chốt, cửa hàng hỏi tên, email, số điện thoại, địa chỉ, buổi nhận và cách thanh toán. Buổi nhận sớm nhất là ngày hôm sau.</p>
+          </article>
+          <article>
+            <h3>Trợ lý AI</h3>
+            <p>Nút Trợ lý AI ở góc màn hình. Nói nhu cầu, trợ lý tìm trong kho đang có.</p>
+          </article>
+        </div>
+      </section>
+      <section class="about-cta">
+        <h2>Cần hỏi cửa hàng?</h2>
+        <p>Gửi lời nhắn. Quản trị đọc trong mục hỗ&nbsp;trợ.</p>
+        <a class="buy" href="/lien-he">Liên hệ</a>
+      </section>
+    </main>"""
+    return layout("Giới thiệu", body, bag_count, current="about")
+
+
+def render_contact(user=None, values=None, message="", error="", bag_count=0):
     values = values or {}
     if user and not values:
         values = {"name": user.get("name") or "", "email": user.get("email") or "", "phone": user.get("phone") or "", "body": ""}
     status = message or error
-    note = f'<p class="note">{esc(status)}</p>' if status else ""
-    body = f"""<main id="content" class="page"><div id="nav-sentinel"></div>
-      <div class="account-sheet">
-        <h1>Liên hệ</h1>
-        <p class="note">Gửi yêu cầu hỗ trợ. Quản trị đọc trong mục Hỗ trợ.</p>
-        {note}
-        <form class="auth-form" method="post" action="/lien-he">
-          <label>Tên <input name="name" value="{esc(values.get("name") or "")}" required></label>
-          <label>Email <input name="email" type="email" value="{esc(values.get("email") or "")}" required></label>
-          <label>Số điện thoại <input name="phone" inputmode="tel" value="{esc(values.get("phone") or "")}" placeholder="0901234567"></label>
-          <label>Nội dung <textarea name="body" required>{esc(values.get("body") or "")}</textarea></label>
-          <button class="buy" type="submit">Gửi</button>
-        </form>
-      </div>
+    status_class = "contact-status is-error" if error else "contact-status"
+    note = f'<p class="{status_class}" role="status">{esc(status)}</p>' if status else ""
+    form = (
+        f'<form class="auth-form" method="post" action="/lien-he">'
+        f'<div class="contact-fields">'
+        f'<label>Tên <input name="name" value="{esc(values.get("name") or "")}" required autocomplete="name"></label>'
+        f'<label>Email <input name="email" type="email" value="{esc(values.get("email") or "")}" required autocomplete="email"></label>'
+        f'</div>'
+        f'<label>Số điện thoại <input name="phone" inputmode="tel" value="{esc(values.get("phone") or "")}" placeholder="10 hoặc 11 số, bắt đầu bằng 0" autocomplete="tel"></label>'
+        f'<label>Nội dung <textarea name="body" required placeholder="Máy bạn muốn hỏi, hoặc việc cần cửa hàng xem.">{esc(values.get("body") or "")}</textarea></label>'
+        f'<button class="buy" type="submit">Gửi liên hệ</button>'
+        f'</form>'
+    )
+    body = f"""<main id="content" class="contact-page">
+      <div id="nav-sentinel"></div>
+      <section class="contact-hero">
+        <p class="eyebrow">Liên hệ</p>
+        <h1>Gửi lời nhắn cho cửa hàng.</h1>
+        <p class="contact-lead">Form trên trang này là cách gửi tin.<br>Quản trị đọc trong mục Hỗ trợ.</p>
+      </section>
+      <section class="contact-grid">
+        <div class="contact-info">
+          <h2>Thông tin liên hệ</h2>
+          <p class="contact-copy">Cửa hàng nhận lời nhắn qua form trên trang này.</p>
+          <div class="contact-cards">
+            <article class="contact-card">
+              <span>Kênh nhận tin</span>
+              <strong>Form trên trang này</strong>
+              <p>Quản trị đọc trong mục Hỗ trợ.</p>
+            </article>
+            <article class="contact-card">
+              <span>Hỏi máy đang có</span>
+              <strong>Trợ lý AI</strong>
+              <p>Nút Trợ lý AI ở góc màn hình. Nói nhu cầu, trợ lý tìm trong kho đang bán.</p>
+            </article>
+            <article class="contact-card">
+              <span>Giá</span>
+              <strong>Giá niêm yết tham chiếu tại Hà Nội.</strong>
+              <p>Giá ghi trên từng sản phẩm.</p>
+            </article>
+          </div>
+        </div>
+        <div class="contact-form-card">
+          <h2>Gửi yêu cầu</h2>
+          <p class="contact-copy">Điền tên, email và nội dung. Số điện thoại để trống cũng gửi được.</p>
+          {note}
+          {form}
+        </div>
+      </section>
+      <section class="contact-steps">
+        <p class="eyebrow">Cách một lời nhắn đi</p>
+        <h2>Ba bước.</h2>
+        <ol class="contact-step-list">
+          <li><strong>Điền form</strong><span>Tên, email, số điện thoại nếu có, và việc cần hỏi.</span></li>
+          <li><strong>Gửi</strong><span>Yêu cầu vào mục Hỗ trợ để quản trị đọc.</span></li>
+          <li><strong>Hỏi máy</strong><span>Trợ lý AI tìm trong kho đang bán. Màu chỉ hỏi khi đặt.</span></li>
+        </ol>
+      </section>
+      <section class="contact-faq">
+        <p class="eyebrow">Hỗ trợ</p>
+        <h2>Câu hay gặp.</h2>
+        <div class="contact-faq-list">
+          <details>
+            <summary>Số điện thoại có phải điền không?</summary>
+            <p>Để trống cũng gửi được. Khi điền, dùng 10 hoặc 11 số, bắt đầu bằng 0.</p>
+          </details>
+          <details>
+            <summary>Quản trị xem tin ở đâu?</summary>
+            <p>Trong mục Hỗ trợ của trang quản trị.</p>
+          </details>
+          <details>
+            <summary>Muốn hỏi máy đang bán thì làm gì?</summary>
+            <p>Mở Trợ lý AI và nói nhu cầu. Cửa hàng hỏi màu khi đặt.</p>
+          </details>
+        </div>
+      </section>
     </main>"""
-    return layout("Liên hệ", body, 0)
+    return layout("Liên hệ", body, bag_count, current="contact")
 
 
 def save_support(conn, user, fields):
@@ -1576,6 +2213,10 @@ def ensure_commerce(conn):
     conn.execute("ALTER TABLE app_chat_messages ADD COLUMN IF NOT EXISTS session_token TEXT")
     conn.execute("CREATE INDEX IF NOT EXISTS app_chat_messages_user_idx ON app_chat_messages(user_id, id DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS app_chat_messages_session_idx ON app_chat_messages(user_id, session_token, id DESC)")
+    from rag.documents import ensure_table
+    ensure_table(conn)
+    from agent.ordersql import ensure_order_sql
+    ensure_order_sql(conn)
     COMMERCE_READY = True
 
 
@@ -1880,7 +2521,7 @@ def render_trace(user, query=None, bag_count=0):
     focus = next((row for row in rows if row["id"] == picked), None)
 
     def href(trace_index, obs_id, mode):
-        return f"/tracing?t={trace_index}&o={obs_id}&view={mode}"
+        return f"/admin/tracing?t={trace_index}&o={obs_id}&view={mode}"
 
     session_links = []
     for index, item in enumerate(turns, start=1):
@@ -1952,28 +2593,27 @@ def render_trace(user, query=None, bag_count=0):
         else:
             detail = '<p class="note">Chọn một observation.</p>'
     revision = trace_revision(user.get("token") or "")
-    body = f"""<main id="content" class="page trace-page" data-rev="{esc(revision)}" data-count="{len(turns)}"><div id="nav-sentinel"></div>
-      <header class="lf-head">
-        <div>
-          <p class="lf-kicker">Phiên đang đăng nhập</p>
-          <div class="lf-title-row">
-            <h1>Tracing</h1>
-            <button type="button" id="trace-reload" class="lf-reload">Tải lại</button>
-          </div>
-          <p class="lf-live">Tự cập nhật khi có lượt mới.</p>
-        </div>
-        <p class="note">Mỗi câu hỏi là một trace. Trong trace có observation: SPAN là Python đọc câu, GENERATION là một lượt model, TOOL là Python chạy tool. Cây và timeline dùng thời gian thật. Không lưu số điện thoại, địa chỉ hay khóa API.</p>
-      </header>
-      <div class="lf lf-view-{esc(view)}">
-        <aside class="lf-sessions" aria-label="Traces trong phiên">
-          <p class="lf-side-label">Traces</p>
-          {"".join(session_links)}
-        </aside>
-        <section class="lf-main" aria-label="Trace">{main}</section>
-        <aside class="lf-detail" aria-label="Observation">{detail}</aside>
-      </div>
-    </main>"""
-    return layout("Tracing", body, bag_count)
+    inner = f"""<div class="lf-title-row">
+      <p class="lf-live">Tự cập nhật khi có lượt mới.</p>
+      <button type="button" id="trace-reload" class="lf-reload">Tải lại</button>
+    </div>
+    <p class="note">Mỗi câu hỏi là một trace. Trong trace có observation: SPAN là Python đọc câu, GENERATION là một lượt model, TOOL là Python chạy tool. Cây và timeline dùng thời gian thật. Không lưu số điện thoại, địa chỉ hay khóa API.</p>
+    <div class="lf lf-view-{esc(view)}">
+      <aside class="lf-sessions" aria-label="Traces trong phiên">
+        <p class="lf-side-label">Traces</p>
+        {"".join(session_links)}
+      </aside>
+      <section class="lf-main" aria-label="Trace">{main}</section>
+      <aside class="lf-detail" aria-label="Observation">{detail}</aside>
+    </div>"""
+    return admin_page(
+        "Tracing",
+        "Tracing",
+        inner,
+        "tracing",
+        main_class=" trace-page",
+        main_attrs=f' data-rev="{esc(revision)}" data-count="{len(turns)}"',
+    )
 
 
 def render_tracing_denied():
@@ -2309,6 +2949,8 @@ def nav_icon(name):
         "store": '<path d="M3 10l2-6h14l2 6"/><path d="M4 10h16v9H4z"/><path d="M10 19v-5h4v5"/>',
         "out": '<path d="M9 6H5v12h4"/><path d="M10 12h9"/><path d="M16 8l4 4-4 4"/>',
         "mail": '<path d="M4 6h16v12H4z"/><path d="M4 7l8 6 8-6"/>',
+        "file": '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/>',
+        "trace": '<path d="M4 15l4-6 4 8 3-4h5"/>',
     }
     return (
         '<svg class="nav-ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
@@ -2317,7 +2959,7 @@ def nav_icon(name):
     )
 
 
-def admin_page(title, heading, inner, current):
+def admin_page(title, heading, inner, current, main_class="", main_attrs=""):
     items = (
         ("home", "Quản trị", "/admin", "grid"),
         ("products", "Sản phẩm", "/admin/products", "box"),
@@ -2327,14 +2969,16 @@ def admin_page(title, heading, inner, current):
         ("reviews", "Đánh giá", "/admin/reviews", "star"),
         ("stats", "Thống kê", "/admin/stats", "chart"),
         ("support", "Hỗ trợ", "/admin/support", "mail"),
+        ("documents", "Tài liệu", "/admin/documents", "file"),
         ("assistant", "Trợ lý Ảo", "/admin/assistant", "spark"),
+        ("tracing", "Tracing", "/admin/tracing", "trace"),
     )
     nav = "".join(
         f'<a href="{href}"{current_attr(key == current)}>{nav_icon(icon)}{esc(label)}</a>'
         for key, label, href, icon in items
     )
     profile_current = current_attr(current == "profile")
-    body = f"""<main id="content" class="page admin-page">
+    body = f"""<main id="content" class="page admin-page{main_class}"{main_attrs}>
       <div id="nav-sentinel"></div>
       <div class="admin-layout">
         <aside class="admin-nav" aria-label="Quản trị">
@@ -2353,6 +2997,73 @@ def admin_page(title, heading, inner, current):
     return layout(title, body, 0, admin=True)
 
 
+def render_admin_documents(conn, note=""):
+    from rag.documents import broker_status, list_documents
+    from rag.settings import DOC_TYPES
+
+    labels = dict(DOC_TYPES)
+    status_label = {
+        "queued": "Đang chờ",
+        "processing": "Đang nhúng",
+        "ready": "Sẵn sàng",
+        "failed": "Lỗi",
+    }
+    options = "".join(
+        '<option value="{0}">{1}</option>'.format(esc(key), esc(label))
+        for key, label in DOC_TYPES
+    )
+    rows = []
+    for item in list_documents(conn):
+        stamp = item["created_at"].strftime("%d.%m.%Y %H:%M") if item["created_at"] else ""
+        state = status_label.get(item["status"], item["status"])
+        detail = esc(item["error"][:180]) if item["error"] else "{0} đoạn".format(item["chunk_count"])
+        rows.append(
+            "<tr><td>{title}<p class=\"note\">{brand} · {kind}</p></td>"
+            "<td>{state}<p class=\"note\">{detail}</p></td>"
+            "<td>{stamp}</td>"
+            "<td class=\"admin-actions\">"
+            "<form method=\"post\" action=\"/admin/documents\">"
+            "<input type=\"hidden\" name=\"action\" value=\"reindex\">"
+            "<input type=\"hidden\" name=\"id\" value=\"{id}\">"
+            "<button class=\"quiet\" type=\"submit\">Nhúng lại</button></form>"
+            "<form method=\"post\" action=\"/admin/documents\">"
+            "<input type=\"hidden\" name=\"action\" value=\"delete\">"
+            "<input type=\"hidden\" name=\"id\" value=\"{id}\">"
+            "<button class=\"quiet\" type=\"submit\">Xóa</button></form>"
+            "</td></tr>".format(
+                title=esc(item["title"]),
+                brand=esc(item["brand"] or "Chưa ghi hãng"),
+                kind=esc(labels.get(item["doc_type"], item["doc_type"])),
+                state=esc(state),
+                detail=detail,
+                stamp=esc(stamp),
+                id=item["id"],
+            )
+        )
+    body_rows = "".join(rows) or '<tr><td colspan="4">Chưa có tài liệu.</td></tr>'
+    inner = """{note}
+    <p class="note">{status}</p>
+    <p class="note">Tệp txt, md hoặc html, tối đa 2 MB. Trang này lưu file gốc rồi gửi mã tài liệu vào RabbitMQ. Worker cắt đoạn, nhúng bằng text-embedding-3-small và ghi Qdrant. Câu hỏi bảo hành chỉ đọc loại Bảo hành.</p>
+    <form class="auth-form" method="post" action="/admin/documents" enctype="multipart/form-data">
+      <label>Tiêu đề <input name="title" required maxlength="160"></label>
+      <label>Hãng <input name="brand" maxlength="40" placeholder="Apple, Samsung, OPPO"></label>
+      <label>Loại <select name="doc_type">{options}</select></label>
+      <label>Ngôn ngữ <select name="lang"><option value="vi">Tiếng Việt</option><option value="en">Tiếng Anh</option></select></label>
+      <label>Phạm vi <input name="scope" maxlength="200" placeholder="Ví dụ: chỉ phụ kiện, không phải laptop"></label>
+      <label>URL nguồn <input name="source_url" maxlength="300" placeholder="https://"></label>
+      <label>Tệp <input type="file" name="file" accept=".txt,.md,.html,.htm" required></label>
+      <button class="buy" type="submit">Đưa vào hàng đợi</button>
+    </form>
+    <div class="admin-table-wrap"><table class="admin-table"><thead><tr><th>Tài liệu</th><th>Trạng thái</th><th>Lúc</th><th></th></tr></thead>
+    <tbody>{rows}</tbody></table></div>""".format(
+        note=admin_note(note),
+        status=esc(broker_status()),
+        options=options,
+        rows=body_rows,
+    )
+    return admin_page("Tài liệu", "Tài liệu cho trợ lý", inner, "documents")
+
+
 def render_admin(conn):
     products = conn.execute("SELECT count(*) FROM products WHERE is_live_catalog").fetchone()[0]
     orders = conn.execute("SELECT count(*), coalesce(sum(total_vnd),0) FROM orders").fetchone()
@@ -2363,6 +3074,7 @@ def render_admin(conn):
       <a href="/admin/orders"><strong>{orders[0]}</strong><span>Đơn hàng · {esc(money(orders[1]))}</span></a>
       <a href="/admin/users"><strong>{users}</strong><span>Người dùng</span></a>
       <a href="/admin/reviews"><strong>{reviews}</strong><span>Đánh giá</span></a>
+      <a href="/admin/tracing"><strong>Tracing</strong><span>Lượt hỏi trong phiên này</span></a>
     </div>
     <p><a class="buy" href="/admin/products">Quản lý sản phẩm</a></p>"""
     return admin_page("Quản trị", "Quản trị", cards, "home")
@@ -2436,7 +3148,7 @@ def render_admin_products(conn, text, page, group):
     like = f"%{text.replace('%', '').replace('_', '')}%" if text else "%"
     rows = conn.execute(
         """
-        SELECT source_product_id, category, brand, name, price_vnd, stock, count(*) OVER ()
+        SELECT source_product_id, category, brand, name, price_vnd, stock, coalesce(description, ''), count(*) OVER ()
         FROM products
         WHERE is_live_catalog
           AND (%s = '' OR category = %s)
@@ -2446,7 +3158,7 @@ def render_admin_products(conn, text, page, group):
         """,
         (group, group, text, like, like, limit, (page - 1) * limit),
     ).fetchall()
-    total = rows[0][6] if rows else 0
+    total = rows[0][7] if rows else 0
     pics = covers(conn, [row[0] for row in rows])
     items = []
     for row in rows:
@@ -2464,7 +3176,10 @@ def render_admin_products(conn, text, page, group):
             f'<div class="admin-product"><a href="/p/{row[0]}">{esc(display_name(row[3]))}</a>'
             f'<p class="note">{meta}</p></div>'
             f'<p class="admin-price">{esc(money(row[4]))}<span class="note">Còn {int(row[5] or 0)}</span></p>'
-            f'<div class="admin-actions"><a href="/admin/{row[0]}">Sửa</a>'
+            f'<div class="admin-actions"><button type="button" class="admin-edit"'
+            f' data-id="{row[0]}" data-name="{esc(row[3])}" data-brand="{esc(row[2] or "")}"'
+            f' data-category="{esc(row[1])}" data-price="{esc(row[4] or "")}" data-stock="{int(row[5] or 0)}"'
+            f' data-description="{esc(row[6] or "")}" data-image="{esc(photo[0]) if photo else ""}">Sửa</button>'
             f'<form method="post" action="/admin/{row[0]}/delete">'
             f'<input type="hidden" name="group" value="{esc(group or row[1])}">'
             f'<button class="quiet" type="submit">Xóa</button></form></div></li>'
@@ -2474,11 +3189,33 @@ def render_admin_products(conn, text, page, group):
     prev_link = f'<a href="{admin_list_href(group, text, page - 1)}">Trước</a>' if page > 1 else "<span></span>"
     next_link = f'<a href="{admin_list_href(group, text, page + 1)}">Sau</a>' if page < last else "<span></span>"
     heading = category_map()[group] if group else "Kết quả tìm"
+    options = "".join(
+        f'<option value="{esc(key)}">{esc(label)}</option>' for key, label in category_pairs()
+    )
+    modal = f"""<dialog id="product-edit" class="admin-modal">
+      <div class="admin-modal-card">
+        <h2>Sửa sản phẩm</h2>
+        <img id="product-edit-photo" class="admin-modal-photo" alt="" hidden>
+        <form class="auth-form" id="product-edit-form" method="post" action="/admin/0">
+          <label>Tên <input name="name" required></label>
+          <label>Hãng <input name="brand"></label>
+          <label>Nhóm <select name="category">{options}</select></label>
+          <label>Giá (đồng) <input name="price" inputmode="numeric" required></label>
+          <label>Tồn kho <input name="stock" inputmode="numeric" required></label>
+          <label>Mô tả <input name="description"></label>
+          <div class="admin-modal-actions">
+            <button type="button" class="quiet" id="product-edit-cancel">Hủy</button>
+            <button class="buy" type="submit">Lưu</button>
+          </div>
+        </form>
+      </div>
+    </dialog>"""
     inner = f"""{search}
     <nav class="admin-filters" aria-label="Nhóm sản phẩm">{chips}</nav>
     <p class="note">{total} sản phẩm</p>
     <ul class="admin-list">{body_rows}</ul>
-    <nav class="pager" aria-label="Trang">{prev_link}<span>{page}/{last}</span>{next_link}</nav>"""
+    <nav class="pager" aria-label="Trang">{prev_link}<span>{page}/{last}</span>{next_link}</nav>
+    {modal}"""
     return admin_page(heading, heading, inner, "products")
 
 
@@ -3184,6 +3921,47 @@ def advice_cards(products):
     return "".join(cards)
 
 
+_BRAND_CHIPS = re.compile(
+    r'<div class="brand-chips">(?:<button type="button" class="brand-chip" data-q="[^"]*">[^<]*</button>)*</div>'
+)
+
+
+def peel_brand_chips(text):
+    """Keep generated brand chips as markup. Escape everything else with the lead."""
+    match = _BRAND_CHIPS.search(text or "")
+    if not match:
+        return text or "", ""
+    prose = ((text or "")[:match.start()] + (text or "")[match.end():]).strip()
+    return prose, match.group(0)
+
+
+def assistant_advice_markup(spoken):
+    """Attach each model explanation to its matching product card."""
+    import agent
+
+    prose, chips = peel_brand_chips(spoken.get("text") or "")
+    products = spoken.get("products") or []
+    reasons = spoken.get("product_reasons") or {}
+    if reasons:
+        intro = chat_plain(prose)
+        notes = reasons
+    else:
+        intro, notes = agent.split_advice(prose, products)
+    shown = []
+    for item in products:
+        copy = dict(item)
+        explanation = notes.get(item.get("product_id"))
+        if explanation:
+            copy["reason"] = explanation
+        elif re.search(r"^Còn \d+ máy", copy.get("reason") or ""):
+            copy["reason"] = ""
+        shown.append(copy)
+    cards = advice_cards(shown) if shown else ""
+    note = f'<p class="chat-lead">{esc(intro)}</p>' if intro else ""
+    body = note + cards + chips
+    return body or '<p class="note">Mình chưa có câu trả lời.</p>'
+
+
 def assistant_checkout_form(payload, values=None, error=""):
     product = payload["product"]
     values = values or payload["fields"]
@@ -3291,6 +4069,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.serve_cutout(path[len("/cutout/"):])
             if path.startswith("/media/"):
                 return self.serve_media(path[len("/media/"):])
+            if path in ("/favicon.ico", "/favicon.svg"):
+                return self.serve_static("favicon.svg")
             if path.startswith("/frontend/"):
                 return self.serve_static(path[len("/frontend/"):])
             bag = parse_bag(self.headers.get("Cookie"))
@@ -3322,28 +4102,31 @@ class Handler(BaseHTTPRequestHandler):
                     if page is None:
                         return self.send_html(self.missing(), 404)
                     return self.send_html(page)
+                if path == "/gioi-thieu":
+                    return self.send_html(render_about(sum(qty for _, qty in bag)))
                 if path == "/lien-he":
                     note = "Đã gửi. Quản trị sẽ đọc yêu cầu này." if (query.get("sent") or [""])[0] == "1" else ""
-                    return self.send_html(render_contact(user, message=note))
+                    return self.send_html(render_contact(user, message=note, bag_count=sum(qty for _, qty in bag)))
                 if path == "/account":
                     if not user:
                         return self.redirect("/login")
                     message = "Đã lưu thông tin." if (query.get("saved") or [""])[0] == "1" else ""
                     return self.send_html(render_account(user, message))
-                if path == "/trace":
-                    return self.redirect("/tracing")
+                if path in ("/trace", "/tracing"):
+                    if not user:
+                        return self.redirect("/login")
+                    if user["role"] != "admin":
+                        return self.send_html(render_tracing_denied(), 403)
+                    target = "/admin/tracing"
+                    if parsed.query:
+                        target += "?" + parsed.query
+                    return self.redirect(target)
                 if path == "/tracing/rev":
                     if not user:
                         return self.send_text("", 401)
                     if user["role"] != "admin":
                         return self.send_text("", 403)
                     return self.send_text(trace_revision(user.get("token") or ""))
-                if path == "/tracing":
-                    if not user:
-                        return self.redirect("/login")
-                    if user["role"] != "admin":
-                        return self.send_html(render_tracing_denied(), 403)
-                    return self.send_html(render_trace(user, query, sum(qty for _, qty in bag)))
                 if path == "/tro-ly":
                     if not user:
                         return self.redirect("/login")
@@ -3447,6 +4230,10 @@ class Handler(BaseHTTPRequestHandler):
                     if not user or user["role"] != "admin":
                         return self.redirect("/login")
                     return self.send_html(render_admin_stats(conn))
+                if path == "/admin/documents":
+                    if not user or user["role"] != "admin":
+                        return self.redirect("/login")
+                    return self.send_html(render_admin_documents(conn, note))
                 if path == "/admin/assistant":
                     if not user or user["role"] != "admin":
                         return self.redirect("/login")
@@ -3456,6 +4243,10 @@ class Handler(BaseHTTPRequestHandler):
                         return self.redirect("/login")
                     message = "Đã lưu." if (query.get("saved") or [""])[0] == "1" else ""
                     return self.send_html(render_admin_profile(user, message))
+                if path == "/admin/tracing":
+                    if not user or user["role"] != "admin":
+                        return self.redirect("/login")
+                    return self.send_html(render_trace(user, query))
                 if path == "/admin/new":
                     if not user or user["role"] != "admin":
                         return self.redirect("/login")
@@ -3484,6 +4275,12 @@ class Handler(BaseHTTPRequestHandler):
                     notice = "Đã gửi đánh giá. Bài sẽ hiện sau khi được duyệt." if (query.get("review") or [""])[0] == "1" else ""
                     page, status = render_product(conn, sum(qty for _, qty in bag), int(ident), notice)
                     return self.send_html(page, status)
+                if path == "/so-sanh":
+                    raw_ids = []
+                    for item in query.get("id") or []:
+                        if item.isdigit():
+                            raw_ids.append(int(item))
+                    return self.send_html(render_compare(conn, sum(qty for _, qty in bag), raw_ids))
                 if path == "/bag":
                     return self.send_html(render_bag(conn, bag))
             self.send_html(self.missing(), 404)
@@ -3495,10 +4292,12 @@ class Handler(BaseHTTPRequestHandler):
         origin = self.headers.get("Origin")
         if PUBLIC_ORIGINS and (origin not in PUBLIC_ORIGINS or origin != f"https://{self.headers.get('Host')}"):
             return self.send_error(403, "Forbidden")
+        path = urlparse(self.path).path
+        if path == "/admin/documents":
+            return self.handle_document_post()
         length = int(self.headers.get("Content-Length") or 0)
         fields = parse_qs(self.rfile.read(min(length, 20000)).decode("utf-8", "replace"))
         bag = parse_bag(self.headers.get("Cookie"))
-        path = urlparse(self.path).path
         with connect() as conn:
             ensure_commerce(conn)
             bind_categories(conn)
@@ -3716,6 +4515,58 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", "0")
         self.end_headers()
 
+    def handle_document_post(self):
+        from rag.documents import accept_upload, remove_document, requeue
+        from rag.settings import MAX_UPLOAD_BYTES
+        from rag.upload import parse_multipart
+
+        length = int(self.headers.get("Content-Length") or 0)
+        if length <= 0 or length > MAX_UPLOAD_BYTES:
+            self.send_response(413)
+            self.send_header("Connection", "close")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        raw = self.rfile.read(length)
+        with connect() as conn:
+            ensure_commerce(conn)
+            bind_categories(conn)
+            user = user_from_cookie(conn, self.headers.get("Cookie"))
+            CURRENT_USER.set(user)
+            if not user or user["role"] != "admin":
+                return self.redirect("/login")
+            content_type = (self.headers.get("Content-Type") or "").lower()
+            if "multipart/form-data" in content_type:
+                try:
+                    fields, files = parse_multipart(raw, self.headers.get("Content-Type") or "")
+                except ValueError:
+                    return self.send_html(render_admin_documents(conn, "Không đọc được tệp."), 400)
+                upload = files.get("file") or {}
+                error = accept_upload(
+                    conn,
+                    user["id"],
+                    fields,
+                    upload.get("filename") or "",
+                    upload.get("data") or b"",
+                )
+                if error:
+                    return self.send_html(render_admin_documents(conn, error), 400)
+                return self.redirect("/admin/documents?note=" + quote("Đã đưa vào hàng đợi."))
+            fields = parse_qs(raw.decode("utf-8", "replace"))
+            action = (fields.get("action") or [""])[0]
+            ident = (fields.get("id") or [""])[0]
+            if not ident.isdigit():
+                return self.redirect("/admin/documents")
+            if action == "delete":
+                error = remove_document(conn, int(ident))
+            elif action == "reindex":
+                error = requeue(conn, int(ident))
+            else:
+                error = ""
+            if error:
+                return self.redirect("/admin/documents?note=" + quote(error[:180]))
+            return self.redirect("/admin/documents")
+
     def handle_register(self, conn, fields):
         name = (fields.get("name") or [""])[0].strip()
         email = (fields.get("email") or [""])[0].strip().lower()
@@ -3788,9 +4639,19 @@ class Handler(BaseHTTPRequestHandler):
         question = (fields.get("q") or [""])[0].strip()
         if not question:
             return answer('<p class="note">Nhập câu hỏi.</p>', status=400)
-        prior = load_chat(conn, user["id"], user.get("token") or "", 8)
+        prior = load_chat(conn, user["id"], user.get("token") or "", 60)
+        failure = "Mình gặp lỗi khi xử lý yêu cầu. Vui lòng thử lại sau."
         try:
             spoken = agent.answer_with_openai(conn, user, question, prior)
+        except urllib.error.HTTPError as exc:
+            print(f"OpenAI agent HTTP failed: {exc.code}")
+            failure = "Dịch vụ tư vấn đang bận hoặc chưa sẵn sàng. Bạn gửi lại tin nhắn sau một lát nhé."
+            spoken = None
+        except (urllib.error.URLError, ConnectionResetError, ConnectionAbortedError,
+                BrokenPipeError, TimeoutError, socket.timeout) as exc:
+            print(f"OpenAI agent connection failed: {type(exc).__name__}")
+            failure = "Kết nối đến dịch vụ tư vấn bị gián đoạn. Mình đã thử lại; bạn gửi lại tin nhắn sau một lát nhé."
+            spoken = None
         except Exception as exc:
             print(f"OpenAI agent failed: {type(exc).__name__}")
             spoken = None
@@ -3812,126 +4673,8 @@ class Handler(BaseHTTPRequestHandler):
             if spoken.get("orders") is not None:
                 note = f'<p class="chat-lead">{esc(lead)}</p>' if lead else ""
                 return answer(note + order_track_markup(spoken["orders"]), question)
-            products = spoken.get("products") or []
-            intro, notes = agent.split_advice(spoken.get("text") or "", products)
-            shown = []
-            for item in products:
-                copy = dict(item)
-                note = notes.get(item.get("product_id"))
-                if note:
-                    copy["reason"] = note
-                elif re.search(r"^Còn \d+ máy", copy.get("reason") or ""):
-                    copy["reason"] = ""
-                shown.append(copy)
-            products = shown
-            cards = advice_cards(products) if products else ""
-            note = f'<p class="chat-lead">{esc(intro)}</p>' if intro else ""
-            if not cards and not note:
-                note = '<p class="note">Mình chưa có câu trả lời.</p>'
-            return answer(note + cards, question)
-        wanted = agent.resolve_request(question, prior)
-        decision = agent.route(question, wanted, prior)
-        tool = decision["tool"]
-
-        def record_offline(tool_name, arguments, found, shown):
-            public_args = {}
-            for key, value in (arguments or {}).items():
-                if value in (None, "", [], False):
-                    continue
-                folded = str(key).casefold()
-                if folded in {"phone", "address", "email"} or "phone" in folded or "address" in folded:
-                    continue
-                public_args[key] = value
-            result = {"note": "", "products": [], "orders": []}
-            if isinstance(found, dict):
-                result["note"] = (found.get("note") or found.get("lead") or "")[:300]
-                result["products"] = [
-                    {"name": item.get("name"), "price_vnd": item.get("price")}
-                    for item in (found.get("products") or [])[:4]
-                ]
-            elif isinstance(found, list):
-                result["orders"] = [
-                    {"order_id": item.get("order_id"), "status": item.get("status"), "total": item.get("total")}
-                    for item in found[:5]
-                ]
-            remember_trace(user.get("token") or "", {
-                "question": question[:500],
-                "source": "offline",
-                "text_from": "offline",
-                "answer": (shown or "")[:800],
-                "steps": [
-                    {
-                        "kind": "fallback",
-                        "type": "SPAN",
-                        "name": "Đường offline",
-                        "text": "Không gọi được model. Python dùng bộ định tuyến offline, không phải suy luận của model.",
-                        "tool": tool_name,
-                        "arguments": public_args,
-                        "t0": 0,
-                        "t1": 0,
-                    },
-                    {
-                        "kind": "tool",
-                        "type": "TOOL",
-                        "name": tool_name,
-                        "sent": {},
-                        "ran": public_args,
-                        "note": "",
-                        "result": result,
-                        "t0": 0,
-                        "t1": 0,
-                    },
-                ],
-            })
-
-        if tool == "refuse":
-            record_offline("refuse", {}, {}, "Mình không làm việc đó.")
-            return answer('<p class="note">Mình không làm việc đó.</p>', question)
-        if tool == "none":
-            record_offline("none", {}, {}, agent.CHAT_REPLY)
-            return answer(f'<p class="chat-lead">{esc(agent.CHAT_REPLY)}</p>', question)
-        if tool == "prepare_checkout":
-            ready = agent.prepare_checkout_request(conn, user, question, wanted)
-            shown = ready.get("note") or "Mở form đặt hàng."
-            record_offline("prepare_checkout", wanted, ready, shown)
-            if not ready.get("ok"):
-                return answer(f'<p class="note">{esc(ready.get("note") or "Chưa chọn được máy để đặt.")}</p>', question)
-            form = assistant_checkout_form(ready)
-            return answer(form)
-        if tool == "list_orders":
-            found = agent.list_orders(conn, user)["orders"]
-            record_offline("list_orders", {}, found, "Đơn của khách.")
-            return answer(order_track_markup(found), question)
-        products = spoken.get("products") if spoken else None
-        lead = advice_lead(spoken.get("text") or "") if spoken else ""
-        if tool == "compare_products":
-            found = agent.compare_products(conn, question)
-            products = found.get("products") or []
-            if not lead:
-                lead = found.get("note") or ""
-        elif tool == "check_inventory":
-            found = agent.check_inventory(conn, wanted)
-            products = found.get("products") or []
-            if not lead:
-                lead = found.get("note") or ""
-        elif not products:
-            if tool == "get_product":
-                found = agent.find_product(conn, wanted)
-            else:
-                found = agent.search_products(conn, **wanted)
-            products = found.get("products") or []
-            if products and not lead:
-                lead = found.get("lead") or products[0].get("reason") or ""
-            elif not products:
-                note = found.get("note") or "Mình chưa tìm được máy phù hợp."
-                record_offline(tool, wanted, found, lead or note)
-                return answer(f'<p class="note">{esc(lead or note)}</p>', question)
-        cards = advice_cards(products) if products else ""
-        note = f'<p class="chat-lead">{esc(lead)}</p>' if lead else ""
-        if not cards and not note:
-            note = '<p class="note">Mình chưa tìm được máy phù hợp.</p>'
-        record_offline(tool, wanted, found, lead)
-        return answer(note + cards, question)
+            return answer(assistant_advice_markup(spoken), question)
+        return answer(f'<p class="note">{esc(failure)}</p>', question)
 
     def handle_checkout(self, conn, user, bag, fields):
         if not user:
@@ -4108,13 +4851,50 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def serve_static(self, name):
-        if name not in ("store.css", "store.js"):
-            return self.send_error(404)
+        files = {
+            "store.css": "text/css; charset=utf-8",
+            "store.js": "text/javascript; charset=utf-8",
+            "favicon.svg": "image/svg+xml",
+            "assistant-robot.jpg": "image/jpeg",
+            "logo.png": "image/png",
+        }
+        kind = files.get(name)
         target = STATIC / name
+        if kind is None:
+            parts = name.split("/")
+            root = (STATIC / "agent-robot-avatar").resolve()
+            target = (STATIC / name).resolve()
+            allowed = (
+                parts
+                and parts[0] == "agent-robot-avatar"
+                and ".." not in parts
+                and target.suffix == ".js"
+                and target.is_file()
+                and str(target).startswith(str(root) + "/")
+            )
+            if not allowed:
+                root = (STATIC / "reasons").resolve()
+                allowed = (
+                    parts
+                    and parts[0] == "reasons"
+                    and ".." not in parts
+                    and target.suffix.lower() in {".jpg", ".jpeg", ".png", ".webp"}
+                    and target.is_file()
+                    and str(target).startswith(str(root) + "/")
+                )
+                if not allowed:
+                    return self.send_error(404)
+                kind = {
+                    ".jpg": "image/jpeg",
+                    ".jpeg": "image/jpeg",
+                    ".png": "image/png",
+                    ".webp": "image/webp",
+                }[target.suffix.lower()]
+            else:
+                kind = "text/javascript; charset=utf-8"
         data = target.read_bytes()
-        kind = "text/css" if name.endswith(".css") else "text/javascript"
         self.send_response(200)
-        self.send_header("Content-Type", f"{kind}; charset=utf-8")
+        self.send_header("Content-Type", kind)
         self.send_header("Cache-Control", "no-cache")
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()

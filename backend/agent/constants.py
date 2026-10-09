@@ -24,6 +24,10 @@ SPEC_NAMES = (
     "Card màn hình",
     "Hỗ trợ sạc tối đa",
     "Sạc kèm theo máy",
+    "Độ phân giải camera sau",
+    "Độ phân giải camera trước",
+    "Tính năng camera sau",
+    "Quay phim camera sau",
 )
 STUDY_CPU_SQL = (
     r"core[[:space:]]*i[7-9]|core[[:space:]]*ultra|core[[:space:]]*7([^0-9]|$)"

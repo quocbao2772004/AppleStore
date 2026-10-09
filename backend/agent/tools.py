@@ -104,50 +104,46 @@ def get_checkout_requirements(conn, user, product_id, color="", qty=1):
 
 
 def place_order(conn, user, shipment, product_id, color="", qty=1):
+    """Save one order by calling place_shop_order. Stock and the order rows move together."""
+    from .ordersql import ensure_order_sql
+
+    ensure_order_sql(conn)
     qty = max(1, min(int(qty or 1), 5))
     found = get_product(conn, product_id, color)
     product = found.get("product")
     if not product:
         return {"ok": False, "note": found.get("note") or "Không đặt được."}
-    if product["stock"] < qty:
-        return {"ok": False, "note": f"Chỉ còn {product['stock']} máy."}
-    updated = conn.execute(
+    color_name = product.get("color_name") or ""
+    row = conn.execute(
         """
-        UPDATE products SET stock = stock - %s
-        WHERE source_product_id=%s AND stock >= %s
-        RETURNING stock
-        """,
-        (qty, product["product_id"], qty),
-    ).fetchone()
-    if not updated:
-        return {"ok": False, "note": "Vừa hết hàng."}
-    label = product["name"]
-    if product["color_name"]:
-        label = f"{label} ({product['color_name']})"
-    total = product["price"] * qty
-    order_id = conn.execute(
-        """
-        INSERT INTO orders(user_id, total_vnd, ship_name, ship_email, ship_phone, ship_address, deliver_on, deliver_slot, pay_method)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id
+        SELECT ok, order_id, stock_left, unit_price, product_name, note
+        FROM place_shop_order(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         """,
         (
-            user["id"], total, shipment["name"], shipment["email"], shipment["phone"],
-            shipment["address"], shipment["deliver_on"], shipment["deliver_slot"],
+            user["id"],
+            product["product_id"],
+            qty,
+            color_name,
+            shipment["name"],
+            shipment["email"],
+            shipment["phone"],
+            shipment["address"],
+            shipment["deliver_on"],
+            shipment["deliver_slot"],
             shipment.get("pay_method") or "cod",
         ),
-    ).fetchone()[0]
-    conn.execute(
-        "INSERT INTO order_items(order_id, product_id, name, unit_price, qty) VALUES (%s,%s,%s,%s,%s)",
-        (order_id, product["product_id"], label, product["price"], qty),
-    )
+    ).fetchone()
+    if not row or not row[0]:
+        return {"ok": False, "note": (row[5] if row else None) or "Không đặt được."}
+    unit = int(row[3] or 0)
     return {
         "ok": True,
-        "order_id": order_id,
-        "name": product["name"],
-        "color_name": product["color_name"],
+        "order_id": row[1],
+        "name": row[4] or product["name"],
+        "color_name": color_name,
         "qty": qty,
-        "total": total,
-        "stock_left": updated[0],
+        "total": unit * qty,
+        "stock_left": int(row[2] or 0),
         "ship_name": shipment["name"],
         "deliver_on": shipment["deliver_on"].strftime("%d.%m.%Y"),
         "deliver_slot": shipment["deliver_slot"],
@@ -189,9 +185,9 @@ def list_orders(conn, user):
 
 def _search_kwargs(resolved, limit=4, allow_more=False):
     keys = (
-        "category", "query", "color", "price_min", "price_max", "brand", "use",
+        "category", "query", "color", "price_min", "price_max", "price_max_exclusive", "brand", "use",
         "ram_gb", "min_ram", "storage_gb", "screen", "line", "chip", "specific",
-        "price_target", "priorities", "family", "variant",
+        "price_target", "priorities", "family", "variant", "excluded_brands",
     )
     args = {key: resolved.get(key) for key in keys}
     args["limit"] = limit
@@ -262,13 +258,19 @@ def _pick_side(products, side):
     return pool[0]
 
 
-def compare_products(conn, question):
+def compare_products(conn, question, sides=None, category=None):
     """Read two catalog rows and return them. The wording of the comparison is left to the model."""
-    left, right = _compare_sides(question)
+    left, right = sides if sides else _compare_sides(question)
     if not left or not right:
         return {"products": [], "note": "Mình cần hai máy để so sánh."}
     picked = []
     for side in (left, right):
+        if sides:
+            found = search_products(conn, category=category or "phone", query=side, limit=4)
+            choice = next((item for item in found.get("products") or [] if side.casefold() in item["name"].casefold()), None)
+            if choice and all(choice["product_id"] != item["product_id"] for item in picked):
+                picked.append(choice)
+            continue
         resolved = resolve_request(side)
         if not resolved.get("query") and not resolved.get("brand"):
             words = [
@@ -298,7 +300,7 @@ def _qty_in(text):
     return int(match.group(1))
 
 
-def prepare_checkout_request(conn, user, question, resolved):
+def prepare_checkout_request(conn, user, question, resolved, qty=None):
     """Build the checkout form. This does not place an order and does not change stock."""
     found = find_product(conn, resolved)
     product = found.get("product")
@@ -309,7 +311,7 @@ def prepare_checkout_request(conn, user, question, resolved):
         user,
         product["product_id"],
         (resolved or {}).get("color") or "",
-        _qty_in(question),
+        qty if qty is not None else _qty_in(question),
     )
     ready["products"] = [product] if ready.get("ok") else []
     return ready

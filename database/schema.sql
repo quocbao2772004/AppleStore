@@ -34,7 +34,7 @@ CREATE TABLE IF NOT EXISTS products (
     detail_price_vnd BIGINT,
     original_detail_price_vnd BIGINT,
     discount_percent NUMERIC(5,2),
-    price_location TEXT DEFAULT 'Thành phố Hồ Chí Minh',
+    price_location TEXT DEFAULT 'Hà Nội',
     currency CHAR(3) NOT NULL DEFAULT 'VND',
     is_live_catalog BOOLEAN NOT NULL DEFAULT false,
     colors_fetched_at TIMESTAMPTZ,
@@ -140,7 +140,7 @@ CREATE TABLE IF NOT EXISTS price_history (
     observed_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     price_vnd BIGINT,
     original_price_vnd BIGINT,
-    location TEXT NOT NULL DEFAULT 'Thành phố Hồ Chí Minh',
+    location TEXT NOT NULL DEFAULT 'Hà Nội',
     availability TEXT,
     run_id BIGINT REFERENCES crawl_runs(id),
     CHECK (price_vnd IS NOT NULL OR original_price_vnd IS NOT NULL)

@@ -2,6 +2,7 @@
 import re
 
 from .constants import CATEGORIES, GAMING_CPU, LAPTOP_GAMING, SPEC_NAMES, STUDY_CPU_SQL
+from .debug import debug
 
 def _money(value):
     if value is None or value == "":
@@ -31,7 +32,47 @@ def _name_query(query):
     return text
 
 
-def search_products(conn, category="phone", query="", color="", price_min=None, price_max=None, brand="", use="", limit=3, ram_gb=None, min_ram=None, storage_gb=None, screen=None, line="", chip="", specific=False, price_target=None, priorities=None, family="", variant="", allow_more=False, cheapest=False, **_extra):
+def _without_excluded(items, excluded):
+    blocked = [name.casefold() for name in (excluded or []) if name]
+    if not blocked or not items:
+        return items
+    kept = []
+    for item in items:
+        blob = ((item.get("brand") or "") + " " + (item.get("name") or "")).casefold()
+        skip = False
+        for name in blocked:
+            if len(name) <= 3:
+                if re.search(r"\b" + re.escape(name) + r"\b", blob):
+                    skip = True
+            elif name in blob:
+                skip = True
+        if not skip:
+            kept.append(item)
+    return kept
+
+
+def list_category(conn, category):
+    """Brands still in stock for one category. The database groups them."""
+    from .constants import CATEGORIES
+
+    if category not in CATEGORIES:
+        return {"category": "", "brands": [], "products": [], "note": ""}
+    rows = conn.execute(
+        """
+        SELECT btrim(p.brand), count(*)
+        FROM products p
+        WHERE p.is_live_catalog AND p.category = %s AND p.stock > 0
+          AND coalesce(p.price_vnd, 0) > 0 AND btrim(coalesce(p.brand, '')) <> ''
+        GROUP BY btrim(p.brand)
+        ORDER BY count(*) DESC, btrim(p.brand)
+        """,
+        (category,),
+    ).fetchall()
+    brands = [{"brand": row[0], "count": int(row[1])} for row in rows]
+    return {"category": category, "brands": brands, "products": [], "note": ""}
+
+
+def search_products(conn, category="phone", query="", color="", price_min=None, price_max=None, brand="", use="", limit=3, ram_gb=None, min_ram=None, storage_gb=None, screen=None, line="", chip="", specific=False, price_target=None, priorities=None, family="", variant="", allow_more=False, cheapest=False, excluded_brands=None, price_max_exclusive=False, min_refresh=None, **_extra):
     limit = max(1, min(int(limit or 3), 20 if allow_more else 4))
     if category not in CATEGORIES:
         category = "phone"
@@ -49,12 +90,14 @@ def search_products(conn, category="phone", query="", color="", price_min=None, 
         category = "laptop"
     price_min = _money(price_min)
     price_max = _money(price_max)
+    if price_max is not None and price_max_exclusive:
+        price_max -= 1
     price_target = _money(price_target)
-    # "Tầm X" stays near X. A lower cap still wins. A looser model cap does not.
+    # A stated budget is the ceiling for recommendations unless the shopper
+    # explicitly raises it. Never silently show a pricier product card.
     strict_max = price_max
     if price_target:
-        soft = int(price_target * 1.15)
-        strict_max = soft if strict_max is None else min(strict_max, soft)
+        strict_max = price_target if strict_max is None else min(strict_max, price_target)
     focus = {
         "ram_gb": ram_gb,
         "min_ram": min_ram,
@@ -66,24 +109,62 @@ def search_products(conn, category="phone", query="", color="", price_min=None, 
         "family": family or "",
         "variant": variant or "",
         "cheapest": bool(cheapest),
+        "min_refresh": _money(min_refresh),
     }
     text = "" if specific else _name_query(query)
-    picked = _search_rows(conn, category, text, color, price_min, strict_max, brand, use, limit, focus)
-    if not picked and text and not specific:
-        picked = _search_rows(conn, category, "", color, price_min, strict_max, brand, use, limit, focus)
-    if not picked and use == "study" and not specific:
-        picked = _search_rows(conn, category, "", color, price_min, strict_max, brand, "study-ram", limit, focus)
+    from .slots import _iphone_line
+
+    picked = _search_rows(conn, category, text, color, price_min, strict_max, brand, use, limit, focus, excluded_brands, priorities, query)
+    if not picked and text and not specific and not _iphone_line(query):
+        picked = _search_rows(conn, category, "", color, price_min, strict_max, brand, use, limit, focus, excluded_brands, priorities, query)
+    # "Chơi game tốt" at a student budget often has no discrete GPU. Show the
+    # in-budget laptops instead of an empty AI-style miss.
+    if not picked and use == "gaming" and category == "laptop" and not specific and not _iphone_line(query):
+        school = _search_rows(
+            conn, category, "", color, price_min, strict_max, brand, "", limit, focus, excluded_brands, priorities, query,
+        )
+        if school:
+            return {
+                "products": school,
+                "note": (
+                    "Trong tầm giá này chưa có laptop card rời để chơi game tốt. "
+                    "Các máy này là laptop còn hàng trong ngân sách."
+                ),
+            }
+    if not picked and use == "study" and not specific and not _iphone_line(query):
+        picked = _search_rows(conn, category, "", color, price_min, strict_max, brand, "study-ram", limit, focus, excluded_brands, priorities)
+    picked = _without_excluded(picked, excluded_brands)
     if not picked and use == "study" and not specific and (price_target or price_max):
-        advice = _near_study(conn, brand, price_min, price_max, price_target, priorities or [])
+        advice = _near_study(conn, brand, price_min, strict_max, price_target, priorities or [], excluded_brands)
         if advice:
-            return advice
+            advice["products"] = _without_excluded(advice.get("products") or [], excluded_brands)
+            if advice["products"]:
+                return advice
     if not picked:
+        from .slots import _named_iphone
+
+        label = _named_iphone(query)
+        if label:
+            others = _other_iphone_lines(conn, label)
+            note = "Mình không thấy " + label + " còn hàng."
+            if others:
+                note += " Đang có " + " và ".join(others) + "."
+            return {"products": [], "note": note}
         if specific:
             note = "Không thấy đúng cấu hình khách hỏi."
         elif color:
             note = "Không còn máy đúng màu, đúng giá và còn hàng."
         elif use == "study":
             note = "Không thấy laptop còn hàng đủ GPU hoặc RAM để học AI."
+        elif brand and brand.casefold() not in {item.casefold() for item in (excluded_brands or [])}:
+            kind = {
+                "phone": "điện thoại",
+                "laptop": "laptop",
+                "tablet": "máy tính bảng",
+                "headphones": "tai nghe",
+                "smartwatch": "đồng hồ",
+            }.get(category, "sản phẩm")
+            note = "Không có " + kind + " " + brand + " còn hàng."
         else:
             note = "Không thấy sản phẩm còn hàng đúng nhu cầu."
         return {"products": [], "note": note}
@@ -97,6 +178,16 @@ def search_products(conn, category="phone", query="", color="", price_min=None, 
         note = "Các máy này có GPU rời hoặc RAM từ 32 GB."
     elif cheapest:
         note = "Các máy này là mẫu còn hàng rẻ nhất đúng nhóm khách hỏi."
+    elif _wants_portable(use, focus, priorities):
+        note = (
+            "Các máy này được xếp theo độ gọn rồi tới pin. Cửa hàng không có cân nặng và không có số giờ dùng pin, "
+            "chỉ có số Wh. Máy màn hình dưới 15 inch đứng trước. Số Wh thấp không có nghĩa là dùng cả ngày."
+        )
+    elif _wants_refresh(priorities) and _refresh_above(picked, focus.get("min_refresh") or 60):
+        note = (
+            "Các máy này có tần số quét cao hơn máy vừa bàn, và giá không vượt máy đó. "
+            "Chỉ nêu đúng số Hz trong thông số màn hình."
+        )
     else:
         note = ""
     if (
@@ -112,7 +203,7 @@ def search_products(conn, category="phone", query="", color="", price_min=None, 
     return {"products": picked, "note": note}
 
 
-def _search_rows(conn, category, text, color, price_min, price_max, brand, use, limit, focus=None):
+def _search_rows(conn, category, text, color, price_min, price_max, brand, use, limit, focus=None, excluded_brands=None, priorities=None, line_query=""):
     color_like = _color_like(color)
     like = f"%{text}%" if text else ""
     brand_like = _brand_like(brand)
@@ -212,11 +303,16 @@ def _search_rows(conn, category, text, color, price_min, price_max, brand, use, 
         focus_sql += " AND p.name ILIKE '%%ipad%%'"
     elif family_name == "macbook" and category == "laptop":
         focus_sql += " AND p.name ILIKE '%%macbook%%'"
+    for excluded in excluded_brands or []:
+        if not excluded:
+            continue
+        focus_sql += " AND coalesce(p.brand, '') NOT ILIKE %s AND p.name NOT ILIKE %s"
+        params.extend((f"%{excluded}%", f"%{excluded}%"))
     params.extend((color_like, color_like))
     price_order = "ASC" if use in ("study", "study-ram") or focus.get("cheapest") else "DESC"
-    row_limit = 400 if use in ("study", "study-ram") or focus.get("cheapest") else 160
-    rows = conn.execute(
-        f"""
+    wide = use in ("study", "study-ram") or focus.get("cheapest") or _wants_portable(use, focus, priorities) or _wants_refresh(priorities)
+    row_limit = 400 if wide else 160
+    sql = f"""
         SELECT p.source_product_id, p.name, p.brand, p.price_vnd, p.stock,
                c.color_name, c.hex_color,
                (
@@ -250,17 +346,21 @@ def _search_rows(conn, category, text, color, price_min, price_max, brand, use, 
           CASE WHEN %s <> '' AND c.color_name ILIKE %s THEN 0 ELSE 1 END,
           p.price_vnd {price_order}
         LIMIT {row_limit}
-        """,
-        params,
-    ).fetchall()
+        """
+    debug("SEARCH_SQL_FILTER", sql=sql, params=params, excluded_brands=excluded_brands or [])
+    rows = conn.execute(sql, params).fetchall()
     picked = _best_colors(rows, color)
     _attach_specs(conn, picked)
+    picked = _keep_named_iphone(picked, line_query or text)
     if use == "gaming":
         picked = [item for item in picked if _is_gaming_item(item)]
+    debug("PRODUCT_IDS_AFTER_HARD_FILTER", ids=[item["product_id"] for item in picked])
     if focus.get("specific"):
         for item in picked:
             item["fit"], item["reason"] = _judge(item)
-        return picked[:limit]
+        ranked = picked[:limit]
+        debug("PRODUCT_IDS_AFTER_RANKING", ids=[item["product_id"] for item in ranked])
+        return ranked
     if use in ("study", "study-ram"):
         picked = [item for item in picked if _ai_score(item) >= 5]
         if focus.get("cheapest"):
@@ -270,10 +370,23 @@ def _search_rows(conn, category, text, color, price_min, price_max, brand, use, 
         for item in picked:
             item["fit"] = "strong"
             item["reason"] = _study_reason(item)
-        return _spread(picked, collapse_storage=True)[:limit]
+        ranked = _spread(picked, collapse_storage=True)[:limit]
+        debug("PRODUCT_IDS_AFTER_RANKING", ids=[item["product_id"] for item in ranked])
+        return ranked
     if focus.get("cheapest") and not focus.get("specific"):
         picked.sort(key=lambda item: item["price"])
-    return _spread(picked)[:limit]
+    elif _wants_portable(use, focus, priorities):
+        picked = _rank_portable(picked, priorities)
+    if _wants_refresh(priorities) and use not in ("study", "study-ram") and not focus.get("specific"):
+        floor = int(focus.get("min_refresh") or 60)
+        smoother = [item for item in picked if _refresh_hz(item) > floor]
+        if smoother:
+            smoother.sort(key=lambda item: -(item.get("price") or 0))
+            picked = smoother
+    # Study ranking keeps its own spread. Other advice shows one card per model line.
+    ranked = _spread(picked, collapse_model=use not in ("study", "study-ram"))[:limit]
+    debug("PRODUCT_IDS_AFTER_RANKING", ids=[item["product_id"] for item in ranked])
+    return ranked
 
 
 
@@ -353,6 +466,10 @@ def _attach_specs(conn, items):
             ("Sạc", charging),
             ("Màn hình", screen),
             ("Card", raw.get("Card màn hình", "")),
+            ("Camera sau", raw.get("Độ phân giải camera sau", "")),
+            ("Camera trước", raw.get("Độ phân giải camera trước", "")),
+            ("Camera", raw.get("Tính năng camera sau", "")),
+            ("Quay phim", raw.get("Quay phim camera sau", "")),
         ]
         item["specs"] = [{"name": name, "value": value} for name, value in wanted if value]
         item["reason"] = item.get("reason") or ""
@@ -388,12 +505,17 @@ def _brand_like(brand):
     return f"%{text}%" if text else ""
 
 
-def _spread(items, collapse_storage=False):
+def _spread(items, collapse_storage=False, collapse_model=False):
     kept = []
     seen = set()
     for item in items:
         key = re.sub(r"\b\d+\s*w\b", "", (item.get("name") or "").casefold())
-        if collapse_storage:
+        if collapse_model:
+            key = re.sub(r"\([^)]*\)", " ", key)
+            key = re.sub(r"\s+-\s+.*$", "", key)
+            key = re.sub(r"\s+\d+\s*gb(?:\s*/\s*\d+\s*(?:gb|tb))?", " ", key)
+            key = re.sub(r"\s+\d+\s*tb\b", " ", key)
+        elif collapse_storage:
             key = re.sub(r"\b\d+\s*tb\b", "", key)
         key = re.sub(r"\s+", " ", key).strip()
         if key in seen:
@@ -401,6 +523,93 @@ def _spread(items, collapse_storage=False):
         seen.add(key)
         kept.append(item)
     return kept
+
+
+def _keep_named_iphone(items, query):
+    """'iPhone 16' is the base model. Another generation is not a substitute."""
+    from .slots import _iphone_line
+
+    wanted = _iphone_line(query)
+    if not wanted:
+        return items
+    return [item for item in items if _iphone_line(item.get("name") or "") == wanted]
+
+
+def _other_iphone_lines(conn, label):
+    """In-stock iPhone lines that share the suffix, named for the absence note."""
+    from .slots import _iphone_line, _named_iphone
+
+    suffix = _iphone_line(label).partition(" ")[2]
+    if not suffix:
+        return []
+    rows = conn.execute(
+        """
+        SELECT name FROM products
+        WHERE is_live_catalog AND stock > 0 AND category = 'phone' AND name ILIKE %s
+        ORDER BY price_vnd DESC
+        """,
+        ("%iphone%" + suffix + "%",),
+    ).fetchall()
+    found = []
+    for (name,) in rows:
+        other = _named_iphone(name)
+        if other and other.casefold() != label.casefold() and other not in found:
+            found.append(other)
+        if len(found) == 2:
+            break
+    return found
+
+
+def _wants_refresh(priorities):
+    return "refresh" in {str(item).casefold() for item in (priorities or [])}
+
+
+def _refresh_hz(item):
+    match = re.search(r"(\d+)\s*hz", _spec_value(item, "Màn hình"), re.I)
+    return int(match.group(1)) if match else 0
+
+
+def _refresh_above(items, floor):
+    floor = int(floor or 60)
+    return bool(items) and all(_refresh_hz(item) > floor for item in items)
+
+
+def _wants_portable(use, focus, priorities):
+    """Office and general advice can prefer a smaller screen or a larger battery. AI study must not."""
+    if use in ("study", "study-ram", "gaming"):
+        return False
+    focus = focus or {}
+    if focus.get("specific") or focus.get("cheapest"):
+        return False
+    names = {str(item).casefold() for item in (priorities or [])}
+    return "weight" in names or "battery" in names
+
+
+def _screen_inches(item):
+    match = re.search(r"(\d+(?:[.,]\d+)?)", _spec_value(item, "Màn hình"))
+    if not match:
+        return 99.0
+    return float(match.group(1).replace(",", "."))
+
+
+def _rank_portable(items, priorities):
+    """No weight spec exists. Under 15 inch stands in for a compact machine, then higher Wh."""
+    names = {str(item).casefold() for item in (priorities or [])}
+    want_weight = "weight" in names
+    want_battery = "battery" in names
+
+    def key(item):
+        screen = _screen_inches(item)
+        wh = _battery_wh(item)
+        price = -(item.get("price") or 0)
+        if want_weight and want_battery:
+            compact = 0 if screen < 15 else 1
+            return (compact, -wh, screen, price)
+        if want_weight:
+            return (screen, price, 0, 0)
+        return (-wh, price, 0, 0)
+
+    return sorted(items, key=key)
 
 
 def _spec_value(item, name):
@@ -488,10 +697,10 @@ def _budget_band(price_min, price_max, price_target):
         return None, None
     if price_min:
         low = max(low, int(price_min))
-    if price_max and int(price_max) < high and (not price_target or int(price_max) < int(price_target)):
-        high = int(price_max)
+    if price_max is not None:
+        high = min(high, int(price_max))
     if low > high:
-        low = int(high * 0.75)
+        return None, None
     return low, high
 
 
@@ -575,10 +784,15 @@ def _air_reason(item, anchor):
     return f"{over}RAM {ram} GB{pin_bit}, GPU tích hợp. Không quá phù hợp để học AI."
 
 
-def _priced_laptops(conn, price_low, price_high, name_like=""):
+def _priced_laptops(conn, price_low, price_high, name_like="", excluded_brands=None):
     like = name_like or ""
-    rows = conn.execute(
-        """
+    exclusion_sql = ""
+    params = [int(price_low), int(price_high), like, like, like]
+    for excluded in excluded_brands or []:
+        if excluded:
+            exclusion_sql += " AND coalesce(p.brand, '') NOT ILIKE %s AND p.name NOT ILIKE %s"
+            params.extend((f"%{excluded}%", f"%{excluded}%"))
+    sql = f"""
         SELECT p.source_product_id, p.name, p.brand, p.price_vnd, p.stock,
                c.color_name, c.hex_color,
                (
@@ -603,11 +817,12 @@ def _priced_laptops(conn, price_low, price_high, name_like=""):
         WHERE p.is_live_catalog AND p.category = 'laptop' AND p.stock > 0 AND coalesce(p.price_vnd, 0) > 0
           AND p.price_vnd >= %s AND p.price_vnd <= %s
           AND (%s = '' OR p.name ILIKE %s OR coalesce(p.brand, '') ILIKE %s)
+          {exclusion_sql}
         ORDER BY p.price_vnd ASC
         LIMIT 240
-        """,
-        (int(price_low), int(price_high), like, like, like),
-    ).fetchall()
+        """
+    debug("SEARCH_SQL_FILTER", sql=sql, params=params, excluded_brands=excluded_brands or [])
+    rows = conn.execute(sql, params).fetchall()
     picked = _best_colors(rows, "")
     _attach_specs(conn, picked)
     return picked
@@ -639,44 +854,32 @@ def _pick_airs(airs, anchor, priorities, count=2):
     return chosen[:count]
 
 
-def _near_study(conn, brand, price_min, price_max, price_target, priorities):
-    """When nothing in budget can learn AI, show nearby laptops and, if they asked for Mac, a few Airs."""
+def _near_study(conn, brand, price_min, price_max, price_target, priorities, excluded_brands=None):
+    """If no capable laptop fits, explain tradeoffs using only in-budget rows."""
     low, high = _budget_band(price_min, price_max, price_target)
     if low is None:
         return None
     anchor = price_target or price_max or high
     wants_mac = _brand_like(brand) == "%macbook%"
     pool = [
-        item for item in _priced_laptops(conn, low, high)
+        item for item in _priced_laptops(conn, low, high, excluded_brands=excluded_brands)
         if "macbook" not in (item.get("name") or "").casefold()
     ]
-    # A hard "dưới X" does not step past the cap. "Tầm X" may step about 12%.
-    ratio = 1.12 if price_target else 1.0
-    under, stretch = _split_budget(pool, anchor, priorities, ratio)
-    laptops = under[:2] + stretch[:1]
+    pool = _without_excluded(pool, excluded_brands)
+    under, _ = _split_budget(pool, anchor, priorities, 1.0)
+    laptops = under[:2]
     airs = []
     neo_note = ""
     if wants_mac:
-        air_high = max(int(anchor * 1.8), high)
-        airs = _pick_airs(_priced_laptops(conn, 1, air_high, "%macbook air%"), anchor, priorities, count=1)
-        if not airs:
-            ceiling = conn.execute(
-                """
-                SELECT max(price_vnd) FROM products
-                WHERE is_live_catalog AND category = 'laptop' AND stock > 0
-                  AND name ILIKE '%%macbook air%%'
-                """
-            ).fetchone()[0]
-            if ceiling:
-                airs = _pick_airs(_priced_laptops(conn, 1, int(ceiling), "%macbook air%"), anchor, priorities, count=1)
-        neos = _priced_laptops(conn, low, high, "%macbook neo%")
+        air_high = high
+        airs = _pick_airs(_priced_laptops(conn, 1, air_high, "%macbook air%", excluded_brands), anchor, priorities, count=1)
+        neos = _priced_laptops(conn, low, high, "%macbook neo%", excluded_brands)
         if neos:
             neo = neos[0]
             neo_note = f" MacBook Neo nằm trong tầm giá nhưng RAM {_ram_gb(neo)} GB, không dùng để học AI."
     if not laptops and not airs:
         return None
     tiers = {id(item): "under" for item in under[:2]}
-    tiers.update({id(item): "stretch" for item in stretch[:1]})
     for item in laptops:
         item["fit"] = "strong" if _ai_score(item) >= 5 else "tight"
         item["reason"] = _near_laptop_reason(item, anchor, tiers.get(id(item), "under"))
@@ -700,7 +903,6 @@ def _near_study(conn, brand, price_min, price_max, price_target, priorities):
     else:
         opening = f"Không có laptop đủ GPU trong tầm {label}."
     under_shown = [item for item in laptops if tiers.get(id(item)) == "under"]
-    stretch_shown = [item for item in laptops if tiers.get(id(item)) == "stretch"]
     if under_shown and any(_ai_score(item) >= 5 for item in under_shown):
         middle = f" Mình đưa laptop dưới {label} trước. Bản GPU rời trong mức này chạy được bài nhỏ."
     elif under_shown:
@@ -711,8 +913,6 @@ def _near_study(conn, brand, price_min, price_max, price_target, priorities):
         middle = f" Laptop quanh {label} chủ yếu GPU tích hợp, học AI thì chật."
     else:
         middle = ""
-    if stretch_shown and under_shown:
-        middle += f" Nhích hơn {label} một chút thì có cấu hình khá hơn."
-    air_note = " MacBook Air để so thì đắt hơn nhiều, pin ổn nhưng không quá phù hợp để học AI." if airs else ""
+    air_note = " MacBook Air trong ngân sách có pin ổn nhưng không quá phù hợp để học AI." if airs else ""
     lead = f"{opening}{middle}{rank_note}{neo_note}{air_note}".strip()
     return {"products": laptops + airs, "note": lead, "lead": lead, "near_miss": True}

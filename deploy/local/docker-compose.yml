@@ -1,0 +1,19 @@
+# Local Qdrant and RabbitMQ for the document index.
+# From the repository root: docker compose -f deploy/local/docker-compose.yml up -d
+services:
+  qdrant:
+    image: qdrant/qdrant:v1.19.2
+    ports:
+      - "127.0.0.1:6333:6333"
+    volumes:
+      - qdrant:/qdrant/storage
+  rabbitmq:
+    image: rabbitmq:4-management
+    ports:
+      - "127.0.0.1:5672:5672"
+      - "127.0.0.1:15672:15672"
+    volumes:
+      - rabbitmq:/var/lib/rabbitmq
+volumes:
+  qdrant:
+  rabbitmq:

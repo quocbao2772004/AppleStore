@@ -1,0 +1,17 @@
+[Unit]
+Description=Octopus Store RAG document worker
+Requires=docker.service postgresql.service
+After=network-online.target docker.service postgresql.service
+
+[Service]
+User=form
+Group=form
+WorkingDirectory=/opt/form-store
+EnvironmentFile=/etc/form-store-model.env
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/form-store/.venv/bin/python /opt/form-store/backend/rag/worker.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -2,7 +2,7 @@
 import re
 
 from .policy import needs_tool
-from .slots import resolve_request
+from .slots import excluded_brands, resolve_request
 
 _SAFETY_RE = re.compile(
     r"xóa|xoá|drop table|delete from|update products|dump |mật khẩu|password|"
@@ -63,6 +63,8 @@ def route(question, resolved=None, history=None):
         return {"intent": "safety", "tool": "refuse"}
     if _ORDER_RE.search(text):
         return {"intent": "order_tracking", "tool": "list_orders"}
+    if excluded_brands(text):
+        return {"intent": "product_search", "tool": "search_products"}
     if _DECLINE_RE.search(text) or _PERMISSION_RE.search(text):
         return {"intent": "chat", "tool": "none"}
     prior_checkout = any(_checkout_line(line) for line in _history_users(history))

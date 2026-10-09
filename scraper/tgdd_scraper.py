@@ -238,7 +238,7 @@ def parse_detail(html, expected_url, expected_pid=None):
     price = money(text_of(price_node)) or money(offers.get("price"))
     old_price = money(text_of(old_node))
     location_text = text_of(soup.select_one(".box04__txt")) or ""
-    location = location_text.removeprefix("Giá tại ").strip() or "Thành phố Hồ Chí Minh"
+    location = location_text.removeprefix("Giá tại ").strip() or "Hà Nội"
     promotions = []
     for item in soup.select(".block__promo .pr-txtb, .block__promo .pr-txt, .block__promo li"):
         value = text_of(item)

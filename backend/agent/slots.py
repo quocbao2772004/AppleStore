@@ -2,6 +2,7 @@
 import re
 
 from .constants import CATEGORIES, HEADPHONE_BRANDS, LAPTOP_BRANDS
+from .debug import debug
 
 _CHEAPEST_RE = re.compile(
     r"rẻ nhất|re nhat|rẻ hơn|re hon|mẫu nào rẻ|mau nao re|giá rẻ nhất|gia re nhat|"
@@ -20,8 +21,39 @@ def _money_phrase(folded):
     return price_min, price_max
 
 
+def _million(raw):
+    return int(float(raw.replace(",", ".")) * 1_000_000)
+
+
+def budget_stretch(text):
+    """'Cố thêm 2 triệu' raises the current ceiling. It is not a new price of 2 triệu."""
+    match = re.search(
+        r"(?:cố thêm|co them)\s+(\d+(?:[.,]\d+)?)\s*(?:triệu|tr)\b",
+        (text or "").casefold(),
+    )
+    if not match:
+        return None
+    return _million(match.group(1))
+
+
 def _budget_phrase(folded):
-    """tầm / khoảng là mức xoay quanh, không phải trần cứng như dưới."""
+    """tầm / khoảng là mức xoay quanh, không phải trần cứng như dưới.
+
+    "25 triệu" đứng một mình cũng là mức xoay quanh. "dưới" và "trên" giữ nguyên
+    là trần hoặc sàn. "20 đến 25 triệu" là một khoảng. "Cố thêm" không phải một giá mới.
+    """
+    if budget_stretch(folded):
+        return None, None, None
+    span = re.search(
+        r"(\d+(?:[.,]\d+)?)\s*(?:đến|den|tới|toi)\s*(\d+(?:[.,]\d+)?)\s*(?:triệu|tr)\b",
+        folded,
+    )
+    if span:
+        low = _million(span.group(1))
+        high = _million(span.group(2))
+        if low > high:
+            low, high = high, low
+        return low, high, None
     price_min, price_max = _money_phrase(folded)
     price_target = None
     around = re.search(
@@ -29,7 +61,11 @@ def _budget_phrase(folded):
         folded,
     )
     if around:
-        price_target = int(float(around.group(1).replace(",", ".")) * 1_000_000)
+        price_target = _million(around.group(1))
+    if price_min is None and price_max is None and price_target is None:
+        bare = re.search(r"\b(\d+(?:[.,]\d+)?)\s*(?:triệu|tr)\b", folded)
+        if bare:
+            price_target = _million(bare.group(1))
     return price_min, price_max, price_target
 
 
@@ -43,23 +79,48 @@ def _priority_phrase(folded):
         priorities.append("battery")
     elif re.search(r"ưu tiên.{0,16}pin|uu tien.{0,16}pin", folded):
         priorities.append("battery")
+    if re.search(r"ưu tiên.{0,16}(?:camera|chụp ảnh|chup anh)|(?:camera|chụp ảnh|chup anh).{0,16}là chính", folded):
+        priorities.append("camera")
     return priorities
 
 
 def _color_phrase(folded):
     for phrase in ("xô thơm", "xo thom", "xanh lá", "xanh la", "xanh dương", "xanh duong", "xanh", "đen", "den", "trắng", "trang", "hồng", "hong", "tím", "tim", "vàng", "vang", "bạc", "bac", "cam"):
-        if phrase in folded:
+        if (re.search(r"\bcam\b", folded) if phrase == "cam" else phrase in folded):
             return phrase
     return ""
 
 
+_AI_STUDY_RE = re.compile(
+    r"học\s*ai|hoc\s*ai|học(?:\s+\w+){0,4}\s+ai|hoc(?:\s+\w+){0,4}\s+ai|"
+    r"trí tuệ|tri tue|machine learning|deep learning|học máy|hoc may|"
+    r"\bcuda\b|\bgpu\b|"
+    r"(?:lập trình|lap trinh|\bcoding\b|\bcode\b).{0,16}\bai\b|"
+    r"\bai\b.{0,16}(?:lập trình|lap trinh|\bcoding\b|\bcode\b)"
+)
+_OFFICE_RE = re.compile(
+    r"kế toán|ke toan|văn phòng|van phong|\bexcel\b|\bword\b|powerpoint|"
+    r"hành chính|hanh chinh|soạn thảo|soan thao"
+)
+
+
+def demands_ai(text):
+    """True when the shopper asked for AI, CUDA, or a GPU workload. Plain coding is not AI."""
+    return _AI_STUDY_RE.search((text or "").casefold()) is not None
+
+
+def office_work(text):
+    """Accounting and office work are not the AI-laptop path."""
+    folded = (text or "").casefold()
+    return _OFFICE_RE.search(folded) is not None and not demands_ai(folded)
+
+
 def _use_phrase(folded):
-    study = any(word in folded for word in ("học ai", "hoc ai", "trí tuệ", "tri tue", "machine learning", "lập trình", "lap trinh", "sinh viên", "sinh vien", "học tập", "hoc tap", "deep learning", "học máy", "hoc may"))
-    if not study and re.search(r"\b(code|coding)\b", folded) and re.search(r"\bai\b", folded):
-        study = True
-    if not study and ("học" in folded or "hoc" in folded) and any(word in folded for word in ("laptop", "máy tính", "may tinh", "ai", "macbook")):
-        study = True
-    if study:
+    if office_work(folded):
+        if any(word in folded for word in ("chơi game", "choi game", "game tốt", "game tot", "cấu hình mạnh")):
+            return "gaming"
+        return ""
+    if demands_ai(folded):
         return "study"
     if any(word in folded for word in ("chơi game", "choi game", "game tốt", "game tot", "cấu hình mạnh")):
         return "gaming"
@@ -75,11 +136,45 @@ def _category_phrase(folded, use):
         return "headphones"
     if "đồng hồ" in folded or "dong ho" in folded or re.search(r"\bwatch\b", folded):
         return "smartwatch"
-    if any(word in folded for word in ("điện thoại", "dien thoai", "iphone")):
+    if any(word in folded for word in ("điện thoại", "dien thoai", "điên thoại", "iphone")):
         return "phone"
     if use == "study":
         return "laptop"
     return ""
+
+
+def _iphone_line(text):
+    """'phone 16' and '16 pro max' become a line key. A bare budget does not."""
+    folded = (text or "").casefold()
+    folded = folded.replace("promax", "pro max")
+    folded = re.sub(r"\b(?:iphone|phone|ip)\b", "iphone", folded)
+    folded = re.sub(r"\s+", " ", folded)
+    match = re.search(r"iphone\s*(1[0-9])\s*(pro max|pro|plus|e)?", folded)
+    # "16 pro max cơ" still names that iPhone. A MacBook 16 Pro does not.
+    if not match and not re.search(r"macbook|laptop|máy tính|may tinh", folded):
+        match = re.search(r"(?:^|[^0-9])(1[0-9])\s*(pro max|plus|e)\b", folded)
+        if not match:
+            match = re.search(r"(?:^|[^0-9])(1[0-9])\s*(pro)\b", folded)
+    if not match:
+        return ""
+    suffix = match.group(2) or ""
+    return match.group(1) + ((" " + suffix) if suffix else "")
+
+
+def _named_iphone(text):
+    line = _iphone_line(text)
+    if not line:
+        return ""
+    number, _, suffix = line.partition(" ")
+    if suffix == "e":
+        return "iPhone " + number + "e"
+    if suffix == "pro max":
+        return "iPhone " + number + " Pro Max"
+    if suffix == "pro":
+        return "iPhone " + number + " Pro"
+    if suffix == "plus":
+        return "iPhone " + number + " Plus"
+    return "iPhone " + number
 
 
 def _family_phrase(folded):
@@ -92,25 +187,67 @@ def _family_phrase(folded):
     return ""
 
 
+_BRAND_NEEDLES = (
+    ("macbook", "MacBook"),
+    ("asus", "Asus"),
+    ("dell", "Dell"),
+    ("lenovo", "Lenovo"),
+    ("acer", "Acer"),
+    ("gigabyte", "GIGABYTE"),
+    ("samsung", "Samsung"),
+    ("xiaomi", "Xiaomi"),
+    ("oppo", "OPPO"),
+    ("vivo", "vivo"),
+    ("honor", "HONOR"),
+    ("realme", "realme"),
+    ("sony", "Sony"),
+    ("nokia", "Nokia"),
+    ("apple", "Apple"),
+    ("iphone", "Apple"),
+    ("ipad", "Apple"),
+)
+
+
+def _negated_brand(folded, needle):
+    brand = re.escape(needle) + r"\b"
+    patterns = (
+        r"(?:không|khong|đừng|dung|chẳng|chang)\s+(?:thích|thich|muốn|muon|cần|can|lấy|lay|chọn|chon|mua)\s+(?:(?:máy|may|hãng|hang|điện thoại|dien thoai)\s+)?" + brand,
+        r"(?:miễn|mien)\s+(?:là\s+)?(?:không|khong)\s+phải\s+(?:(?:máy|may|hãng|hang)\s+)?" + brand,
+        r"(?:trừ|tru)\s+(?:(?:hãng|hang|máy|may)\s+)?" + brand + r"(?:\s+ra)?",
+        r"(?:ngoài|ngoai)\s+(?:(?:hãng|hang|máy|may)\s+)?" + brand,
+    )
+    return any(re.search(pattern, folded) for pattern in patterns)
+
+
+def excluded_brands(text):
+    """Brands the shopper rejected. A later positive mention is not an exclusion."""
+    folded = (text or "").casefold()
+    found = []
+    for needle, label in _BRAND_NEEDLES:
+        if _negated_brand(folded, needle) and label not in found:
+            found.append(label)
+    return found
+
+
 def _brand_phrase(folded):
-    if "macbook" in folded:
+    rejected = {label.casefold() for label in excluded_brands(folded)}
+
+    def allow(label):
+        return label.casefold() not in rejected
+
+    if "macbook" in folded and allow("MacBook"):
         return "MacBook"
     laptopish = "laptop" in folded or (
         ("máy tính" in folded or "may tinh" in folded)
         and "bảng" not in folded
         and "bang" not in folded
     )
-    if "apple" in folded and "iphone" not in folded and "ipad" not in folded and laptopish:
+    if "apple" in folded and "iphone" not in folded and "ipad" not in folded and laptopish and allow("MacBook"):
         return "MacBook"
-    if "iphone" in folded or "ipad" in folded or "apple" in folded:
+    if ("iphone" in folded or "ipad" in folded or "apple" in folded) and allow("Apple"):
         return "Apple"
-    for needle, label in (
-        ("asus", "Asus"), ("dell", "Dell"), ("lenovo", "Lenovo"), ("acer", "Acer"),
-        ("gigabyte", "GIGABYTE"), ("samsung", "Samsung"), ("xiaomi", "Xiaomi"),
-        ("oppo", "OPPO"), ("vivo", "vivo"), ("honor", "HONOR"), ("realme", "realme"),
-        ("sony", "Sony"), ("nokia", "Nokia"),
-    ):
-        if needle in folded:
+    for needle, label in _BRAND_NEEDLES:
+        if needle in folded and allow(label):
             return label
     if re.search(r"\blg\b", folded):
         return "LG"
@@ -241,6 +378,7 @@ def _signals(text):
         "color": _color_phrase(folded),
         "price_min": price_min,
         "price_max": price_max,
+        "price_max_exclusive": bool(re.search(r"dưới\s+\d+(?:[.,]\d+)?\s*(?:triệu|tr)\b", folded)),
         "price_target": price_target,
         "priorities": _priority_phrase(folded),
         "brand": brand,
@@ -255,6 +393,7 @@ def _signals(text):
         "specific": focus["specific"],
         "family": family,
         "order_id": order_id,
+        "excluded_brands": excluded_brands(folded),
     }
 
 
@@ -272,6 +411,7 @@ def _mark_cheapest(slots, question, current):
     if _asks_cheapest(question) and not own_price:
         slots["price_min"] = None
         slots["price_max"] = None
+        slots["price_max_exclusive"] = False
         slots["price_target"] = None
         slots["cheapest"] = True
     else:
@@ -279,29 +419,28 @@ def _mark_cheapest(slots, question, current):
     return slots
 
 
-def resolve_request(question, history=None):
-    """Keep the need from earlier turns when the new line only changes brand, price, or line."""
-    current = _signals(question)
-    prior_lines = []
-    for role, body in history or []:
-        if role != "user":
-            continue
-        text = (body or "").strip()
-        if text and text not in {"Đặt giúp tôi", "Đặt hàng"}:
-            prior_lines.append(text)
-    prior = _signals("\n".join(prior_lines)) if prior_lines else None
+def _merge_request(current, prior, question):
+    """Apply one user turn to the accumulated slots, newest values first."""
     if not prior:
         current["category"] = current["category"] or "phone"
         return _mark_cheapest(current, question, current)
+    # A budget in this sentence replaces the old one. "Tầm 25 triệu" must not
+    # keep an earlier "dưới 20 triệu", or the new band collapses.
+    stated_budget = (
+        current["price_min"] is not None
+        or current["price_max"] is not None
+        or current["price_target"] is not None
+    )
     merged = {
         "category": current["category"] or prior["category"] or "phone",
         "query": current["query"] or ("" if current["specific"] else prior["query"]),
         "color": current["color"] or prior["color"],
         "brand": current["brand"] or prior["brand"],
         "use": current["use"] or prior["use"],
-        "price_min": current["price_min"] if current["price_min"] is not None else prior["price_min"],
-        "price_max": current["price_max"] if current["price_max"] is not None else prior["price_max"],
-        "price_target": current["price_target"] if current["price_target"] is not None else prior["price_target"],
+        "price_min": current["price_min"] if stated_budget else prior["price_min"],
+        "price_max": current["price_max"] if stated_budget else prior["price_max"],
+        "price_max_exclusive": current["price_max_exclusive"] if stated_budget else prior.get("price_max_exclusive", False),
+        "price_target": current["price_target"] if stated_budget else prior["price_target"],
         "priorities": current["priorities"] or prior["priorities"],
         "ram_gb": current["ram_gb"] if current["specific"] else prior.get("ram_gb"),
         "min_ram": None if current["specific"] else (current["min_ram"] if current["min_ram"] is not None else prior.get("min_ram")),
@@ -313,7 +452,18 @@ def resolve_request(question, history=None):
         "specific": current["specific"],
         "family": current["family"] or prior.get("family") or "",
         "order_id": current.get("order_id"),
+        "excluded_brands": [
+            name for name in (prior.get("excluded_brands") or []) if name != current.get("brand")
+        ] + [
+            name for name in (current.get("excluded_brands") or [])
+            if name not in (prior.get("excluded_brands") or [])
+        ],
     }
+    if current["category"] and current["category"] != prior.get("category"):
+        for key in ("query", "brand", "family", "line", "variant", "chip"):
+            merged[key] = current.get(key) or ""
+        for key in ("ram_gb", "min_ram", "storage_gb", "screen"):
+            merged[key] = current.get(key)
     if not current["category"] and current["brand"] in LAPTOP_BRANDS:
         merged["category"] = "laptop"
     elif not current["category"] and current["brand"] in HEADPHONE_BRANDS:
@@ -339,7 +489,55 @@ def resolve_request(question, history=None):
             merged["storage_gb"] = current["storage_gb"]
     if merged["use"] == "study" and merged["category"] == "phone":
         merged["category"] = "laptop"
+    if merged.get("brand") in (merged.get("excluded_brands") or []):
+        merged["brand"] = ""
+    if current.get("excluded_brands"):
+        rejected = {name.casefold() for name in merged["excluded_brands"]}
+        if any(name in (merged.get("query") or "").casefold() for name in rejected):
+            merged["query"] = ""
+        family_brand = {"iPhone": "apple", "iPad": "apple", "MacBook": "macbook"}
+        family = merged.get("family")
+        if family and (family_brand.get(family) in rejected or (family == "MacBook" and "apple" in rejected)):
+            if family.casefold() in (merged.get("query") or "").casefold():
+                merged["query"] = ""
+            merged["family"] = ""
+    stretch = budget_stretch(question)
+    if stretch:
+        base = merged.get("price_max")
+        if base is None:
+            base = merged.get("price_target")
+        if base is None:
+            base = merged.get("price_min")
+        if base is not None:
+            merged["price_max"] = int(base) + stretch
+            merged["price_max_exclusive"] = False
+            merged["price_target"] = None
+    if re.search(
+        r"không cần gaming|khong can gaming|không chơi game nữa|khong choi game nua|bỏ gaming|bo gaming",
+        (question or "").casefold(),
+    ):
+        if merged.get("use") == "gaming":
+            merged["use"] = ""
+    if "camera" in current["priorities"] and not current["use"] and merged.get("use") == "gaming":
+        merged["use"] = ""
     return _mark_cheapest(merged, question, current)
+
+
+def resolve_request(question, history=None):
+    """Replay user turns in order so the latest budget, use and brand win."""
+    prior = None
+    for role, body in history or []:
+        if role != "user":
+            continue
+        text = (body or "").strip()
+        if text and text not in {"Đặt giúp tôi", "Đặt hàng"}:
+            prior = _merge_request(_signals(text), prior, text)
+    current = _signals(question)
+    debug("STATE_BEFORE_EXTRACTION", user=question, state=prior or {})
+    debug("EXTRACTED_SLOTS", slots=current)
+    merged = _merge_request(current, prior, question)
+    debug("STATE_AFTER_MERGE", state=merged)
+    return merged
 
 
 def interpret(text):

@@ -4,6 +4,7 @@ import os
 import urllib.request
 
 from .format import _clip
+from .prompts.chat import CHAT
 from .reports import inventory_report, order_report, sales_report, store_summary, work_queue
 from .route import local_calls
 
@@ -173,20 +174,11 @@ def speak_local(conn, question):
 
 def _ask_model(conn, question, key):
     base = os.environ.get("base_url", "https://api.openai.com/v1").strip().rstrip("/")
-    model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini").strip() or "gpt-4o-mini"
+    model = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna").strip() or "gpt-5.6-luna"
     messages = [
         {
             "role": "system",
-            "content": (
-                "Bạn là trợ lý quản trị cửa hàng Octopus Store. Trả lời tiếng Việt, ngắn, đủ số. "
-                "Chỉ dùng số liệu từ tool. Không bịa. Không sửa dữ liệu và không đặt hàng. "
-                "Tổng quan: store_summary. Bán chạy hoặc doanh thu: sales_report. "
-                "Đơn đã hủy không tính vào bán chạy. period là today, 7d, 30d hoặc all. "
-                "Tồn kho: inventory_report, mode out, low hoặc lookup. Có thể kèm category. "
-                "Đơn: order_report, mode status, recent hoặc one. "
-                "Đánh giá chờ duyệt và hỗ trợ: work_queue. "
-                "Nếu tool trả về rỗng, nói chưa có."
-            ),
+            "content": CHAT,
         },
         {"role": "user", "content": question[:500]},
     ]
