@@ -147,11 +147,15 @@ def invoice_bodies(order):
     return plain, page
 
 
+def smtp_password():
+    # Gmail shows an app password in groups of four. The login value has no spaces.
+    return "".join((os.environ.get("SMTP_PASSWORD") or "").split())
+
+
 def smtp_ready():
     host = (os.environ.get("SMTP_HOST") or "").strip()
     user = (os.environ.get("SMTP_USER") or "").strip()
-    password = os.environ.get("SMTP_PASSWORD") or ""
-    return bool(host and user and password.strip())
+    return bool(host and user and smtp_password())
 
 
 def send_invoice(order):
@@ -163,7 +167,7 @@ def send_invoice(order):
         return False, "Chưa cấu hình hộp thư gửi hoá đơn."
     host = os.environ["SMTP_HOST"].strip()
     user = os.environ["SMTP_USER"].strip()
-    password = os.environ["SMTP_PASSWORD"]
+    password = smtp_password()
     try:
         port = int(os.environ.get("SMTP_PORT") or "587")
     except ValueError:

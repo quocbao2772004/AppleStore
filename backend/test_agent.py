@@ -1094,6 +1094,17 @@ class CatalogReadTests(unittest.TestCase):
         self.assertEqual(len(ear_names), 2)
         self.assertTrue(any("sony" in name for name in ear_names))
         self.assertTrue(any("apple" in name or "airpods" in name for name in ear_names))
+        three = agent.compare_products(self.conn, "So sánh iPhone 16, iPhone 16 Plus và iPhone 16e")
+        three_names = [product["name"].casefold() for product in three["products"]]
+        self.assertEqual(len(three_names), 3, three_names)
+        self.assertEqual(len(three_names), len(set(three_names)))
+        base = [
+            name for name in three_names
+            if "iphone 16" in name and "plus" not in name and "16e" not in name and "pro" not in name
+        ]
+        self.assertEqual(len(base), 1, three_names)
+        self.assertTrue(any("iphone 16 plus" in name for name in three_names), three_names)
+        self.assertTrue(any("iphone 16e" in name for name in three_names), three_names)
 
     def test_a_gaming_laptop_is_a_discrete_gpu_not_a_phone_chip(self):
         request = agent.resolve_request("laptop chơi game dưới 25 triệu")
@@ -1809,6 +1820,168 @@ class AdminRouterTests(unittest.TestCase):
         self.assertEqual(admin_agent._money(0), "0₫")
         self.assertEqual(admin_agent._money(57980000), "57.980.000₫")
 
+    def _choice(self, **kwargs):
+        choice = {
+            "tool": "store_summary",
+            "period": "",
+            "category": "",
+            "inventory_mode": "",
+            "query": "",
+            "order_mode": "",
+            "order_id": None,
+        }
+        choice.update(kwargs)
+        return choice
+
+    def test_explicit_admin_sentence_stays_on_the_offline_route(self):
+        tool, args = admin_agent.apply_admin_guards(
+            "laptop bán chạy 7 ngày",
+            [],
+            self._choice(tool="store_summary"),
+        )
+        self.assertEqual(tool, "sales_report")
+        self.assertEqual(args["period"], "7d")
+        self.assertEqual(args["category"], "laptop")
+
+    def test_category_follow_up_keeps_the_earlier_period(self):
+        history = [
+            ("user", "Điện thoại bán chạy 7 ngày"),
+            ("bot", "Bán chạy 7 ngày qua, Điện thoại: 2 đơn."),
+        ]
+        tool, args = admin_agent.apply_admin_guards(
+            "Thế còn laptop",
+            history,
+            self._choice(tool="sales_report", period="all", category="laptop"),
+        )
+        self.assertEqual(tool, "sales_report")
+        self.assertEqual(args["category"], "laptop")
+        self.assertEqual(args["period"], "7d")
+
+    def test_order_follow_up_uses_the_order_just_shown(self):
+        history = [("bot", "Đơn #41 · Đã đặt\nĐơn #40 · Hoàn tất")]
+        tool, args = admin_agent.apply_admin_guards(
+            "Đơn đó của ai",
+            history,
+            self._choice(tool="order_report", order_mode="status"),
+        )
+        self.assertEqual(tool, "order_report")
+        self.assertEqual(args["mode"], "one")
+        self.assertEqual(args["order_id"], 41)
+
+    def test_stock_follow_up_reuses_the_product_just_named(self):
+        history = [("bot", "• MacBook Air: 2 máy, 10.000.000₫")]
+        tool, args = admin_agent.apply_admin_guards(
+            "Máy đó còn bao nhiêu",
+            history,
+            self._choice(tool="inventory_report", inventory_mode="lookup", query=""),
+        )
+        self.assertEqual(tool, "inventory_report")
+        self.assertEqual(args["mode"], "lookup")
+        self.assertEqual(args["query"], "MacBook Air")
+
+    def test_a_write_request_selects_no_report(self):
+        tool, args = admin_agent.apply_admin_guards(
+            "xóa hết đơn đi",
+            [],
+            self._choice(tool="order_report", order_mode="recent"),
+        )
+        self.assertEqual((tool, args), ("none", {}))
+
+    def test_graph_runs_one_report_then_explains(self):
+        payloads = [
+            {"content": json.dumps(self._choice(tool="store_summary"))},
+            {"content": "Đang bán 12 sản phẩm. Doanh thu đơn chưa hủy 10.000.000₫."},
+        ]
+
+        def fake_complete(*args, **kwargs):
+            return payloads.pop(0)
+
+        summary = {
+            "products": 12,
+            "categories": [{"category": "Điện thoại", "count": 12}],
+            "orders": [{"status": "Đã đặt", "count": 1}],
+            "revenue_excluding_cancelled": "10.000.000₫",
+            "users": 2,
+            "reviews": 0,
+            "rating_average": None,
+            "reviews_pending": 0,
+            "support_requests": 0,
+            "out_of_stock": 0,
+            "low_stock": 0,
+        }
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            with patch("agent.model._complete", fake_complete):
+                with patch("admin_agent.answer._run_tool", return_value=summary) as tool:
+                    spoken = admin_agent.run_admin_graph(object(), "tổng quan cửa hàng")
+        self.assertEqual(tool.call_count, 1)
+        self.assertEqual(tool.call_args.args[1], "store_summary")
+        self.assertEqual(spoken["tool"], "store_summary")
+        self.assertEqual(spoken["text_from"], "model")
+        self.assertIn("12", spoken["text"])
+        self.assertIn("10.000.000₫", spoken["text"])
+
+    def test_graph_overrides_a_wrong_tool_and_drops_loose_prose(self):
+        payloads = [
+            {"content": json.dumps(self._choice(tool="store_summary"))},
+            {"content": "Ổn."},
+        ]
+
+        def fake_complete(*args, **kwargs):
+            return payloads.pop(0)
+
+        sales = {
+            "period": "7 ngày qua",
+            "category": "Laptop",
+            "orders": 1,
+            "units": 2,
+            "revenue": "10.000.000₫",
+            "best_sellers": [{"name": "MacBook Air", "qty": 2, "revenue": "10.000.000₫"}],
+        }
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            with patch("agent.model._complete", fake_complete):
+                with patch("admin_agent.answer._run_tool", return_value=sales) as tool:
+                    spoken = admin_agent.run_admin_graph(object(), "laptop bán chạy 7 ngày")
+        self.assertEqual(tool.call_count, 1)
+        self.assertEqual(tool.call_args.args[1], "sales_report")
+        self.assertEqual(tool.call_args.args[2]["period"], "7d")
+        self.assertEqual(tool.call_args.args[2]["category"], "laptop")
+        self.assertEqual(spoken["text_from"], "tool_note")
+        self.assertIn("MacBook Air", spoken["text"])
+        self.assertIn("7 ngày qua", spoken["text"])
+
+    def test_graph_refuses_a_write_without_calling_a_tool(self):
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+            with patch("agent.model._complete") as complete:
+                with patch("admin_agent.answer._run_tool") as tool:
+                    spoken = admin_agent.run_admin_graph(object(), "xóa hết đơn đi")
+        self.assertEqual(complete.call_count, 0)
+        self.assertEqual(tool.call_count, 0)
+        self.assertEqual(spoken["tool"], "none")
+        self.assertIn("không xóa", spoken["text"])
+
+    def test_missing_key_still_answers_from_the_offline_router(self):
+        conn = psycopg.connect("dbname=tgdd_products", autocommit=True)
+        try:
+            with patch.dict(os.environ, {"OPENAI_API_KEY": ""}):
+                text, note = admin_agent.answer_admin(conn, "đơn mới nhất")
+        finally:
+            conn.close()
+        self.assertIn("số liệu trong máy", note)
+        self.assertTrue("Đơn #" in text or "Chưa có đơn" in text)
+
+    def test_admin_thread_keeps_earlier_turns(self):
+        import server
+
+        page = server.render_admin_assistant(
+            [("user", "đơn mới nhất"), ("bot", "Đơn #3 · Đã đặt")],
+            "",
+        )
+        self.assertLess(page.find("đơn mới nhất"), page.find("Đơn #3"))
+        self.assertIn("Cuộc mới", page)
+        self.assertIn('name="action" value="clear"', page)
+        self.assertEqual(server.admin_chat_token({"token": "abc"}), "admin:abc")
+        self.assertEqual(server.admin_chat_token({}), "")
+
 
 class StorefrontTests(unittest.TestCase):
     def test_chat_panel_names_octopus_store_and_has_two_animations(self):
@@ -1820,7 +1993,7 @@ class StorefrontTests(unittest.TestCase):
         self.assertIn('id="octopus-mascot"', page)
         self.assertIn('data-state="idle"', page)
         self.assertIn("<agent-robot-avatar", page)
-        self.assertIn("agent-robot-avatar.js?v=97", page)
+        self.assertIn("agent-robot-avatar.js?v=105", page)
         self.assertNotIn("assistant-robot.jpg", page)
         self.assertIn("Trợ lý AI", page)
         self.assertIn('class="assistant-caption"', page)
@@ -1837,8 +2010,10 @@ class StorefrontTests(unittest.TestCase):
         self.assertIn('setMascot("busy")', script)
         self.assertIn('setMascot("idle")', script)
         self.assertIn("startWaiting", script)
-        self.assertIn("store.css?v=97", page)
-        self.assertIn("store.js?v=97", page)
+        self.assertIn("store.css?v=105", page)
+        self.assertIn(".assistant-pop:has(.chat-compare.cols-3)", css)
+        self.assertIn("min(760px, calc(100vw - 32px))", css)
+        self.assertIn("store.js?v=105", page)
         self.assertIn('id="assistant-status"', page)
         self.assertIn("think-dots", script)
         self.assertIn("Đang nghĩ…", script)
@@ -1885,6 +2060,56 @@ class StorefrontTests(unittest.TestCase):
         self.assertIn("—", table)
         self.assertIn(">So sánh điện thoại</h1>", table)
         self.assertEqual(table.count("data-compare-id="), 2)
+        left = {
+            "product_id": 11, "name": "iPhone 16", "price": 24990000, "stock": 181,
+            "image_url": "", "color_name": "Trắng",
+            "specs": [{"name": "RAM", "value": "8 GB"}, {"name": "Chip", "value": "A18"}],
+        }
+        right = {
+            "product_id": 12, "name": "iPhone 16 Plus", "price": 25490000, "stock": 229,
+            "image_url": "", "color_name": "",
+            "specs": [{"name": "RAM", "value": "8 GB"}, {"name": "Chip", "value": "A18"}, {"name": "Pin", "value": "4674 mAh"}],
+        }
+        third = {
+            "product_id": 13, "name": "iPhone 16e", "price": 16990000, "stock": 270,
+            "image_url": "", "color_name": "",
+            "specs": [{"name": "RAM", "value": "8 GB"}, {"name": "Chip", "value": "A18"}],
+        }
+        compared = server.assistant_advice_markup({
+            "text": "Hai máy khác nhau ở giá.",
+            "tool": "compare_products",
+            "products": [left, right],
+        })
+        self.assertIn("chat-compare", compared)
+        self.assertIn("<table", compared)
+        self.assertIn("iPhone 16", compared)
+        self.assertIn("iPhone 16 Plus", compared)
+        self.assertIn("24.990.000₫", compared)
+        self.assertIn("Còn 181", compared)
+        self.assertIn("4674 mAh", compared)
+        self.assertIn("—", compared)
+        self.assertIn('class="is-diff"', compared)
+        self.assertIn("Đặt giúp tôi", compared)
+        self.assertIn('href="/p/11"', compared)
+        self.assertNotIn("advice-card", compared)
+        self.assertIn("Hai máy khác nhau ở giá.", compared)
+        ram_row = compared.split(">RAM</th>", 1)[1].split("</tr>", 1)[0]
+        self.assertNotIn("is-diff", ram_row)
+        price_row = compared.split(">Giá</th>", 1)[1].split("</tr>", 1)[0]
+        self.assertEqual(price_row.count("is-diff"), 2)
+        many = server.chat_compare_markup([left, right, third])
+        self.assertIn("cols-3", many)
+        self.assertEqual(many.count("chat-compare-product"), 3)
+        self.assertIn("16.990.000₫", many)
+        pin_row = many.split(">Pin</th>", 1)[1].split("</tr>", 1)[0]
+        self.assertEqual(pin_row.count("is-diff"), 1)
+        searched = server.assistant_advice_markup({
+            "text": "Hai máy trong tầm giá.",
+            "tool": "search_products",
+            "products": [left, right],
+        })
+        self.assertIn("advice-card", searched)
+        self.assertNotIn("chat-compare", searched)
         self.assertIn('href="/">Trang chủ</a>', page)
         self.assertIn('href="/gioi-thieu">Giới thiệu</a>', page)
         self.assertIn('href="/lien-he">Liên hệ</a>', page)
@@ -2044,6 +2269,87 @@ class StorefrontTests(unittest.TestCase):
         })
         self.assertNotIn("<script>", poisoned)
         self.assertIn("&lt;script&gt;", poisoned)
+
+    def test_warranty_reply_quotes_the_passage_and_the_invoice_stays_in_chat(self):
+        import server
+
+        quoted = server.warranty_markup({
+            "tool": "search_documents",
+            "text": "Chỉ được kể các đoạn dưới đây. Đừng bịa.",
+            "passages": [{
+                "brand": "Apple",
+                "title": "Bảo hành iPhone",
+                "source_url": "https://www.apple.com/legal/warranty/example",
+                "text": "Đoạn điều khoản được truy xuất nguyên văn.",
+            }],
+        })
+        self.assertIn('class="citation"', quoted)
+        self.assertIn("Apple · Bảo hành iPhone", quoted)
+        self.assertIn("Đoạn điều khoản được truy xuất nguyên văn.", quoted)
+        self.assertIn('href="https://www.apple.com/legal/warranty/example"', quoted)
+        self.assertNotIn("Chỉ được kể các đoạn", quoted)
+        blocked = server.warranty_markup({
+            "tool": "search_documents",
+            "text": "note",
+            "passages": [{
+                "brand": "Apple",
+                "title": "Điều khoản",
+                "source_url": "javascript:alert(1)",
+                "text": "Đoạn hợp lệ.",
+            }],
+        })
+        self.assertNotIn("javascript:", blocked)
+        self.assertIn("Đoạn hợp lệ.", blocked)
+        self.assertNotIn("<a ", blocked)
+        empty = server.warranty_markup({
+            "tool": "search_documents",
+            "text": "Không có điều khoản của hãng này trong kho. Đừng lấy điều khoản hãng khác.",
+            "passages": [],
+        })
+        self.assertIn("Đừng lấy điều khoản hãng khác", empty)
+        self.assertNotIn("citation", empty)
+        routed = server.assistant_advice_markup({
+            "tool": "search_documents",
+            "text": "Chỉ được kể các đoạn dưới đây.",
+            "passages": [{
+                "brand": "Apple",
+                "title": "Điều khoản",
+                "source_url": "https://www.apple.com/legal/warranty/example",
+                "text": "Đoạn được trích.",
+            }],
+            "products": [],
+        })
+        self.assertIn("Đoạn được trích.", routed)
+        self.assertNotIn("Chỉ được kể các đoạn", routed)
+        page = server.assistant_receipt({
+            "order_id": 42,
+            "name": "điện thoại iphone 16 128gb",
+            "color_name": "Trắng",
+            "qty": 1,
+            "total": 24990000,
+            "ship_name": "Bảo",
+            "ship_phone": "0900000000",
+            "ship_address": "1 phố Demo, Hà Nội",
+            "deliver_on": "14.10.2026",
+            "deliver_slot": "morning",
+            "pay_method": "cod",
+        }, "Chưa gửi hoá đơn qua email. Chưa trừ tiền thật.")
+        self.assertIn('class="chat-invoice"', page)
+        self.assertIn("Hoá đơn đơn hàng #42", page)
+        self.assertIn("24.990.000₫", page)
+        self.assertIn("Chưa trừ tiền thật.", page)
+        self.assertIn("Thanh toán khi nhận hàng", page)
+        self.assertIn("Bảo", page)
+        self.assertNotIn("vietqr", page.casefold())
+        self.assertNotIn("img.vietqr.io", page)
+        css = (server.ROOT / "frontend" / "store.css").read_text()
+        self.assertIn(".citation blockquote", css)
+        self.assertIn("white-space: pre-wrap", css)
+        self.assertIn(".chat-invoice", css)
+        self.assertIn(".invoice-total", css)
+        script = (server.ROOT / "frontend" / "store.js").read_text()
+        self.assertIn("chat-invoice", script)
+        self.assertIn("citation", script)
 
 
 if __name__ == "__main__":

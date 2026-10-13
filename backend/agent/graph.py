@@ -994,6 +994,12 @@ def explain_node(state):
             "Giao diện đã hiện chip các hãng còn hàng. Viết một hoặc hai câu dẫn ngắn. "
             "Không liệt kê lại tên hãng, không bịa hãng, không kể từng máy, không hỏi thêm."
         )})
+    elif tool == "compare_products" and products:
+        messages.insert(1, {"role": "system", "content": (
+            "Giao diện đã hiện bảng so sánh các máy trong tool, gồm giá, tồn và thông số. "
+            "Viết một hoặc hai câu về khác biệt đáng kể. Không chép lại từng dòng của bảng. "
+            "Không bịa thông số, giá hay số lượng ngoài tool."
+        )})
     if tool == "search_products" and products:
         messages.insert(1, {"role": "system", "content": (
             "Trả JSON theo schema: intro là một câu dẫn ngắn; reasons có đúng một lời giải thích "
@@ -1091,6 +1097,24 @@ def _build():
 SHOP_GRAPH = _build()
 
 
+def _shown_passages(final):
+    """Citations for the shopper. The trace keeps its own shortened copy."""
+    if (final.get("tool") or "") != "search_documents":
+        return []
+    shown = []
+    for item in ((final.get("result") or {}).get("passages") or [])[:3]:
+        text = (item.get("text") or "").strip()
+        if not text:
+            continue
+        shown.append({
+            "title": item.get("title") or "",
+            "brand": item.get("brand") or "",
+            "source_url": item.get("source_url") or "",
+            "text": text,
+        })
+    return shown
+
+
 def run_shop_graph(conn, user, question, history=None):
     """Run the compiled graph once. Products stay in the tool's order."""
     token = _CONN.set(conn)
@@ -1123,10 +1147,12 @@ def run_shop_graph(conn, user, question, history=None):
     spoken = {
         "text": final.get("text") or "",
         "text_from": final.get("text_from") or "tool_note",
+        "tool": final.get("tool") or "",
         "products": final.get("products") or [],
         "product_reasons": final.get("product_reasons") or {},
         "checkout": final.get("checkout"),
         "orders": final.get("orders"),
+        "passages": _shown_passages(final),
         "trace": final.get("trace") or [],
     }
     try:

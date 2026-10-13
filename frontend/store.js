@@ -478,7 +478,7 @@
     }).then(function (html) {
       if (!pending) return;
       var markup = html || "<p class=\"note\">Không trả lời được.</p>";
-      var rich = markup.indexOf("advice-card") !== -1 || markup.indexOf("<form") !== -1;
+      var rich = markup.indexOf("advice-card") !== -1 || markup.indexOf("chat-compare") !== -1 || markup.indexOf("chat-invoice") !== -1 || markup.indexOf("citation") !== -1 || markup.indexOf("<form") !== -1;
       pending.className = rich ? "bubble bot cards" : "bubble bot";
       pending.innerHTML = markup;
       log.scrollTop = log.scrollHeight;

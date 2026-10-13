@@ -145,6 +145,8 @@ def place_order(conn, user, shipment, product_id, color="", qty=1):
         "total": unit * qty,
         "stock_left": int(row[2] or 0),
         "ship_name": shipment["name"],
+        "ship_phone": shipment.get("phone") or "",
+        "ship_address": shipment.get("address") or "",
         "deliver_on": shipment["deliver_on"].strftime("%d.%m.%Y"),
         "deliver_slot": shipment["deliver_slot"],
         "pay_method": shipment.get("pay_method") or "cod",
@@ -214,13 +216,47 @@ def check_inventory(conn, resolved):
     return {"products": [product], "stock": stock, "note": note}
 
 
-def _compare_sides(question):
+def _compare_names(question):
+    """Up to four product names from a comparison sentence."""
     text = (question or "").strip()
+    head = re.search(r"so sánh\s+(.+)$", text, re.I)
+    if head:
+        body = re.split(r"\s+thì\b|\?", head.group(1), maxsplit=1, flags=re.I)[0]
+        parts = [
+            part.strip(" .")
+            for part in re.split(r"\s*,\s*|\s+và\s+|\s+với\s+", body, flags=re.I)
+        ]
+        parts = [part for part in parts if part]
+        if len(parts) >= 2:
+            return parts[:4]
     for pattern in _SIDE_PATTERNS:
         found = pattern.search(text)
         if found:
-            return found.group(1).strip(), found.group(2).strip()
-    return "", ""
+            return [found.group(1).strip(), found.group(2).strip()]
+    return []
+
+
+def _resolve_side(conn, side, category):
+    resolved = resolve_request(side)
+    if category and not resolved.get("category"):
+        resolved["category"] = category
+    if not resolved.get("query") and not resolved.get("brand"):
+        words = [
+            word for word in re.findall(r"[a-z0-9]+", side.casefold())
+            if word not in {"tai", "nghe", "dong", "ho", "may", "va", "voi"}
+        ]
+        if words:
+            resolved["query"] = words[-1]
+    found = search_products(conn, **_search_kwargs(resolved, limit=4))
+    return _pick_side(found.get("products") or [], side)
+
+
+def _named_side(conn, side, category):
+    found = search_products(conn, category=category or "phone", query=side, limit=4)
+    return next(
+        (item for item in found.get("products") or [] if side.casefold() in (item.get("name") or "").casefold()),
+        None,
+    )
 
 
 def _pick_side(products, side):
@@ -259,28 +295,23 @@ def _pick_side(products, side):
 
 
 def compare_products(conn, question, sides=None, category=None):
-    """Read two catalog rows and return them. The wording of the comparison is left to the model."""
-    left, right = sides if sides else _compare_sides(question)
-    if not left or not right:
+    """Read two to four catalog rows. The wording of the comparison is left to the model."""
+    listed = _compare_names(question)
+    provided = [side.strip() for side in (sides or ()) if (side or "").strip()]
+    names = []
+    for name in [*provided, *listed]:
+        if name.casefold() not in {item.casefold() for item in names}:
+            names.append(name)
+    names = names[:4]
+    if len(names) < 2:
         return {"products": [], "note": "Mình cần hai máy để so sánh."}
+    provided_folded = {name.casefold() for name in provided}
     picked = []
-    for side in (left, right):
-        if sides:
-            found = search_products(conn, category=category or "phone", query=side, limit=4)
-            choice = next((item for item in found.get("products") or [] if side.casefold() in item["name"].casefold()), None)
-            if choice and all(choice["product_id"] != item["product_id"] for item in picked):
-                picked.append(choice)
-            continue
-        resolved = resolve_request(side)
-        if not resolved.get("query") and not resolved.get("brand"):
-            words = [
-                word for word in re.findall(r"[a-z0-9]+", side.casefold())
-                if word not in {"tai", "nghe", "dong", "ho", "may", "va", "voi"}
-            ]
-            if words:
-                resolved["query"] = words[-1]
-        found = search_products(conn, **_search_kwargs(resolved, limit=4))
-        choice = _pick_side(found.get("products") or [], side)
+    for side in names:
+        if side.casefold() in provided_folded:
+            choice = _named_side(conn, side, category) or _resolve_side(conn, side, category)
+        else:
+            choice = _resolve_side(conn, side, category) or _named_side(conn, side, category)
         if choice and all(choice["product_id"] != item["product_id"] for item in picked):
             picked.append(choice)
     if len(picked) < 2:

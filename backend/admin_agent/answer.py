@@ -1,10 +1,6 @@
-"""Admin tool schema and the answer loop. Every number comes from reports.py."""
-import json
+"""Admin tool schema and the answer entry. Every number comes from reports.py."""
 import os
-import urllib.request
 
-from .format import _clip
-from .prompts.chat import CHAT
 from .reports import inventory_report, order_report, sales_report, store_summary, work_queue
 from .route import local_calls
 
@@ -172,59 +168,8 @@ def speak_local(conn, question):
     return "\n".join(blocks)
 
 
-def _ask_model(conn, question, key):
-    base = os.environ.get("base_url", "https://api.openai.com/v1").strip().rstrip("/")
-    model = os.environ.get("OPENAI_MODEL", "gpt-5.6-luna").strip() or "gpt-5.6-luna"
-    messages = [
-        {
-            "role": "system",
-            "content": CHAT,
-        },
-        {"role": "user", "content": question[:500]},
-    ]
-    last = None
-    for _ in range(3):
-        request = urllib.request.Request(
-            base + "/chat/completions",
-            data=json.dumps({
-                "model": model,
-                "messages": messages,
-                "tools": TOOLS,
-                "temperature": 0.1,
-            }).encode(),
-            headers={
-                "Authorization": "Bearer " + key,
-                "Content-Type": "application/json",
-                "User-Agent": "Mozilla/5.0",
-            },
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=40) as response:
-            payload = json.loads(response.read().decode())
-        message = payload["choices"][0]["message"]
-        calls = message.get("tool_calls") or []
-        if not calls:
-            return (message.get("content") or "").strip()
-        messages.append({"role": "assistant", "content": message.get("content") or "", "tool_calls": calls})
-        for call in calls:
-            name = call["function"]["name"]
-            try:
-                arguments = json.loads(call["function"].get("arguments") or "{}")
-            except json.JSONDecodeError:
-                arguments = {}
-            result = _run_tool(conn, name, arguments)
-            last = (name, result)
-            messages.append({
-                "role": "tool",
-                "tool_call_id": call["id"],
-                "content": json.dumps(result, ensure_ascii=False),
-            })
-    if last:
-        return "\n".join(_lines(last[1], last[0]))
-    return ""
-
-
-def answer_admin(conn, question):
+def answer_admin(conn, question, history=None):
+    """Answer one admin turn. Live calls use the LangGraph; no key uses the offline router."""
     question = (question or "").strip()[:500]
     if not question:
         return "Nhập một câu hỏi.", ""
@@ -232,10 +177,12 @@ def answer_admin(conn, question):
     if not key:
         return speak_local(conn, question), "Đang trả lời từ số liệu trong máy."
     try:
-        text = _ask_model(conn, question, key)
+        from .graph import run_admin_graph
+
+        spoken = run_admin_graph(conn, question, history)
     except Exception as exc:
-        print(f"Admin agent failed: {type(exc).__name__}")
-        text = ""
-    if text:
-        return text, ""
+        print("Admin agent failed: " + type(exc).__name__)
+        spoken = None
+    if spoken and spoken.get("text"):
+        return spoken["text"], ""
     return speak_local(conn, question), "Không kết nối được trợ lý từ xa, nên đây là số liệu trong máy."

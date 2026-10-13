@@ -49,6 +49,7 @@ def load_dotenv(path):
 
 load_dotenv(ROOT / ".env")
 import invoice
+import payment
 MEDIA_ROOT = (ROOT / "data" / "images").resolve()
 STATIC = ROOT / "frontend"
 DSN = os.environ.get("DATABASE_URL", "dbname=tgdd_products")
@@ -749,7 +750,7 @@ def layout(title, body, bag_count, current=None, home=False, admin=False, show_r
 <meta name="color-scheme" content="light">
 <title>{esc(title)}</title>
 <link rel="icon" href="/frontend/favicon.svg" type="image/svg+xml">
-<link rel="stylesheet" href="/frontend/store.css?v=97">
+<link rel="stylesheet" href="/frontend/store.css?v=105">
 </head>
 <body{home_attr}>
 <a class="skip" href="#content">Tới nội dung</a>
@@ -770,8 +771,8 @@ def layout(title, body, bag_count, current=None, home=False, admin=False, show_r
 {assistant_pop}
 {reasons}
 {footer}
-<script type="module" src="/frontend/agent-robot-avatar/agent-robot-avatar.js?v=97"></script>
-<script src="/frontend/store.js?v=97" defer></script>
+<script type="module" src="/frontend/agent-robot-avatar/agent-robot-avatar.js?v=105"></script>
+<script src="/frontend/store.js?v=105" defer></script>
 </body>
 </html>"""
 
@@ -1726,12 +1727,12 @@ def local_pay_mark(order_id, total):
     )
 
 
-def render_receipt(conn, user, order_id):
+def render_receipt(conn, user, order_id, notice=""):
     row = conn.execute(
         """
         SELECT id, user_id, total_vnd, status, ship_name, ship_email, ship_phone, ship_address,
                deliver_on, deliver_slot, coalesce(pay_method, 'cod'), created_at,
-               invoice_sent_at, invoice_error
+               invoice_sent_at, invoice_error, paid_at, payment_email_sent_at, payment_email_error
         FROM orders WHERE id=%s
         """,
         (order_id,),
@@ -1749,20 +1750,37 @@ def render_receipt(conn, user, order_id):
     state = ORDER_LABEL.get(row[3], row[3])
     when = delivery_when(row[8], row[9])
     pay = "Thanh toán khi nhận hàng" if row[10] != "qr" else "Chuyển khoản trên máy này"
-    mark = local_pay_mark(row[0], row[2]) if row[10] == "qr" else ""
-    body = f"""<main id="content" class="page"><div id="nav-sentinel"></div>
-      <div class="order-sheet">
-        <h1>Phiếu đơn #{row[0]}</h1>
-        <p class="note">{esc(state)} · {esc(pay)}</p>
-        <ul class="order-card receipt-lines">{lines}</ul>
-        <p class="total"><span>Tổng</span><strong>{esc(money(row[2]))}</strong></p>
-        <p>{esc(row[4] or "")}<br>{esc(row[6] or "")}<br>{esc(row[7] or "")}</p>
-        <p class="note">Nhận {esc(when)}</p>
-        {mark}
-        <p class="note">{esc(invoice.invoice_status_note(row[12], row[13]))}</p>
-        <p><a class="buy" href="/orders">Về đơn hàng</a></p>
-      </div>
-    </main>"""
+    if row[10] != "qr":
+        mark = ""
+    elif row[14]:
+        mark = f'<p class="note">{esc(payment.paid_note({"payment_email_sent_at": row[15], "payment_email_error": row[16] or ""}))}</p>'
+    elif payment.bank_ready():
+        ref = payment.transfer_reference(row[0])
+        mark = (
+            f'<img class="pay-qr" src="/orders/{int(row[0])}/pay-qr" alt="Mã chuyển khoản">'
+            f'<p class="note">Nội dung chuyển khoản: {esc(ref)}. Đúng số tiền trên phiếu.</p>'
+            f'<form method="post" action="/orders/{int(row[0])}/pay-check">'
+            f'<button class="buy" type="submit">Đối soát chuyển khoản</button></form>'
+        )
+    else:
+        mark = local_pay_mark(row[0], row[2])
+    extra = f'<p class="note">{esc(notice)}</p>' if notice else ""
+    info = f"""<div class="receipt-info">
+          <h1>Phiếu đơn #{row[0]}</h1>
+          <p class="note">{esc(state)} · {esc(pay)}</p>
+          {extra}
+          <ul class="order-card receipt-lines">{lines}</ul>
+          <p class="total"><span>Tổng</span><strong>{esc(money(row[2]))}</strong></p>
+          <p>{esc(row[4] or "")}<br>{esc(row[6] or "")}<br>{esc(row[7] or "")}</p>
+          <p class="note">Nhận {esc(when)}</p>
+          <p class="note">{esc(invoice.invoice_status_note(row[12], row[13]))}</p>
+          <p><a class="buy" href="/orders">Về đơn hàng</a></p>
+        </div>"""
+    if row[10] == "qr" and not row[14]:
+        sheet = f'<div class="order-sheet receipt-pay"><div class="receipt-grid"><aside class="pay-pane">{mark}</aside>{info}</div></div>'
+    else:
+        sheet = f'<div class="order-sheet">{info}{mark}</div>'
+    body = f'<main id="content" class="page"><div id="nav-sentinel"></div>{sheet}</main>'
     return layout(f"Đơn #{row[0]}", body, 0)
 
 
@@ -2196,6 +2214,9 @@ def ensure_commerce(conn):
     conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS pay_method TEXT DEFAULT 'cod'")
     conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS invoice_sent_at TIMESTAMPTZ")
     conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS invoice_error TEXT")
+    conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS paid_at TIMESTAMPTZ")
+    conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_email_sent_at TIMESTAMPTZ")
+    conn.execute("ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_email_error TEXT")
     conn.execute("ALTER TABLE product_reviews ADD COLUMN IF NOT EXISTS approved BOOLEAN DEFAULT true")
     conn.execute(
         """
@@ -2642,7 +2663,10 @@ def chat_history_markup(user, bot_avatar):
                 f'<div class="msg user"><div class="bubble user"><span>{esc(body)}</span></div>{user_avatar}</div>'
             )
             continue
-        kind = "bubble bot cards" if body and ("advice-card" in body or "<form" in body) else "bubble bot"
+        kind = "bubble bot cards" if body and (
+            "advice-card" in body or "chat-compare" in body or "chat-invoice" in body
+            or "citation" in body or "<form" in body
+        ) else "bubble bot"
         parts.append(f'<div class="msg bot">{bot_avatar}<div class="{kind}">{body}</div></div>')
     return "".join(parts)
 
@@ -3568,39 +3592,65 @@ def render_admin_stats(conn):
     return admin_page("Thống kê", "Thống kê", cards, "stats")
 
 
-def ask_assistant(conn, question):
+def admin_chat_token(user):
+    """Keep admin turns off the shopper transcript. The shopper token is unchanged."""
+    token = (user or {}).get("token") or ""
+    if not token:
+        return ""
+    return "admin:" + token
+
+
+def ask_assistant(conn, question, history=None):
     import admin_agent
-    return admin_agent.answer_admin(conn, question)
+    return admin_agent.answer_admin(conn, question, history)
 
 
-def render_admin_assistant(question="", answer="", note=""):
+def render_admin_assistant(messages=None, note=""):
     user = CURRENT_USER.get() or {}
     initial = esc((user.get("name") or "Q").strip()[:1].upper())
-    user_avatar = f'<span class="av av-user" aria-hidden="true">{initial}</span>'
-    if answer:
-        aside = f'<p class="chat-note">{esc(note)}</p>' if note else ""
-        thread = (
-            f'<div class="msg user"><div class="bubble user"><span>{esc(question)}</span></div>{user_avatar}</div>'
-            f'<div class="msg bot">{BOT_MARK}<div class="bubble bot">{esc(answer)}</div>{aside}</div>'
-        )
+    user_avatar = '<span class="av av-user" aria-hidden="true">' + initial + "</span>"
+    rows = list(messages or [])
+    if rows:
+        last_bot = -1
+        for index, row in enumerate(rows):
+            if row[0] in ("bot", "assistant"):
+                last_bot = index
+        parts = []
+        for index, row in enumerate(rows):
+            body = esc(row[1] or "")
+            if row[0] == "user":
+                parts.append(
+                    '<div class="msg user"><div class="bubble user"><span>'
+                    + body + "</span></div>" + user_avatar + "</div>"
+                )
+            else:
+                aside = '<p class="chat-note">' + esc(note) + "</p>" if index == last_bot and note else ""
+                parts.append(
+                    '<div class="msg bot">' + BOT_MARK + '<div class="bubble bot">'
+                    + body + "</div>" + aside + "</div>"
+                )
+        thread = "".join(parts)
     else:
         name = esc(user.get("name") or "bạn")
         thread = (
-            f'<div class="msg bot">{BOT_MARK}'
-            f'<div class="bubble bot">Xin chào {name}. Bạn muốn xem doanh thu, máy bán chạy, kho hay đơn mới?</div></div>'
+            '<div class="msg bot">' + BOT_MARK
+            + '<div class="bubble bot">Xin chào ' + name
+            + ". Bạn muốn xem doanh thu, máy bán chạy, kho hay đơn mới?</div></div>"
         )
-    inner = f"""<div class="admin-chat">
-      <div class="assistant-bar">
-        <div class="assistant-who">{BOT_MARK}<div><h2>Trợ lý</h2><p>Số liệu cửa hàng, chỉ đọc</p></div></div>
-      </div>
-      <div class="admin-chat-log">{thread}</div>
-      <form class="assistant-compose" method="post" action="/admin/assistant">
-        <input name="q" type="text" placeholder="Hỏi số liệu cửa hàng" required aria-label="Câu hỏi">
-        <button class="send" type="submit" aria-label="Gửi">
-          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-8-6 16-2-6z"/></svg>
-        </button>
-      </form>
-    </div>"""
+    inner = (
+        '<div class="admin-chat">'
+        '<div class="assistant-bar"><div class="assistant-who">' + BOT_MARK
+        + "<div><h2>Trợ lý</h2><p>Số liệu cửa hàng, chỉ đọc</p></div></div></div>"
+        '<form class="admin-chat-clear" method="post" action="/admin/assistant">'
+        '<input type="hidden" name="action" value="clear">'
+        '<button type="submit">Cuộc mới</button></form>'
+        '<div class="admin-chat-log">' + thread + "</div>"
+        '<form class="assistant-compose" method="post" action="/admin/assistant">'
+        '<input name="q" type="text" placeholder="Hỏi số liệu cửa hàng" required aria-label="Câu hỏi">'
+        '<button class="send" type="submit" aria-label="Gửi">'
+        '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 12l16-8-6 16-2-6z"/></svg>'
+        "</button></form></div>"
+    )
     return admin_page("Trợ lý Ảo", "Trợ lý Ảo", inner, "assistant")
 
 
@@ -3893,6 +3943,95 @@ def chat_plain(text):
     return intro if len(intro) >= 12 else joined
 
 
+_CHAT_COMPARE_SPECS = (
+    "Chip", "RAM", "Bộ nhớ", "Pin", "Sạc", "Màn hình", "Card",
+    "Camera sau", "Camera trước", "Camera", "Quay phim",
+)
+
+
+def _compare_diff(values):
+    folded = [(value or "").casefold() for value in values]
+    if len(set(folded)) <= 1:
+        return [False] * len(values)
+    counts = {}
+    for item in folded:
+        counts[item] = counts.get(item, 0) + 1
+    top = max(counts.values())
+    leaders = [item for item, count in counts.items() if count == top]
+    if top > 1 and len(leaders) == 1:
+        leader = leaders[0]
+        return [item != leader for item in folded]
+    return [True] * len(values)
+
+
+def chat_compare_markup(products):
+    """Side-by-side catalog facts for two to four machines in the chat."""
+    columns = list(products[:4])
+    blank = "—"
+
+    def spec_map(item):
+        found = {}
+        for spec in item.get("specs") or []:
+            name = spec.get("name") or ""
+            if name and name not in found:
+                found[name] = (spec.get("value") or "").strip()
+        return found
+
+    maps = [spec_map(item) for item in columns]
+    heads = []
+    for item in columns:
+        image = shown_image(item.get("image_url"))
+        title = display_name(item.get("name") or "")
+        if item.get("color_name"):
+            title += f" màu {item['color_name']}"
+        photo = f'<img src="{esc(image)}" alt="">' if image else '<span class="chat-compare-photo"></span>'
+        heads.append(
+            f'<th scope="col"><a class="chat-compare-product" href="/p/{int(item["product_id"])}">'
+            f'{photo}<strong>{esc(title)}</strong></a></th>'
+        )
+
+    def add_row(label, values):
+        if all(value == blank for value in values):
+            return ""
+        cells = []
+        for value, on in zip(values, _compare_diff(values)):
+            mark = ' class="is-diff"' if on else ""
+            cells.append(f"<td{mark}>{esc(value)}</td>")
+        return f'<tr><th scope="row">{esc(label)}</th>{"".join(cells)}</tr>'
+
+    rows = [
+        add_row("Giá", [money(item.get("price")) for item in columns]),
+        add_row("Tồn", [f"Còn {int(item.get('stock') or 0)}" for item in columns]),
+    ]
+    names = list(_CHAT_COMPARE_SPECS)
+    for bag in maps:
+        for name in bag:
+            if name not in names:
+                names.append(name)
+    for name in names:
+        rows.append(add_row(name, [bag.get(name) or blank for bag in maps]))
+    actions = []
+    for item in columns:
+        actions.append(
+            '<td><div class="ctas">'
+            f'<a class="buy" href="/p/{int(item["product_id"])}">Xem chi tiết</a>'
+            '<form method="post" action="/tro-ly">'
+            '<input type="hidden" name="action" value="checkout">'
+            f'<input type="hidden" name="product_id" value="{int(item["product_id"])}">'
+            f'<input type="hidden" name="color" value="{esc(item.get("color_name") or "")}">'
+            '<button class="order-help" type="submit">Đặt giúp tôi</button></form></div></td>'
+        )
+    rows.append(f'<tr class="chat-compare-buy"><th scope="row"></th>{"".join(actions)}</tr>')
+    count = len(columns)
+    body = "".join(row for row in rows if row)
+    return (
+        f'<div class="chat-compare cols-{count}">'
+        f'<table><caption>So sánh {count} máy</caption>'
+        f'<thead><tr><th scope="col"></th>{"".join(heads)}</tr></thead>'
+        f'<tbody>{body}</tbody></table></div>'
+    )
+
+
 def advice_cards(products):
     cards = []
     for item in products:
@@ -3935,8 +4074,39 @@ def peel_brand_chips(text):
     return prose, match.group(0)
 
 
+def warranty_markup(spoken):
+    """Show each retrieved passage as a citation. Do not add terms that were not retrieved."""
+    passages = [
+        item for item in (spoken.get("passages") or [])[:3]
+        if (item.get("text") or "").strip()
+    ]
+    if not passages:
+        prose = chat_plain(spoken.get("text") or "")
+        if not prose:
+            return '<p class="note">Mình chưa có câu trả lời.</p>'
+        return f'<p class="chat-lead">{esc(prose)}</p>'
+    blocks = []
+    for item in passages:
+        brand = (item.get("brand") or "").strip()
+        title = (item.get("title") or "Điều khoản").strip()
+        heading = " · ".join(part for part in (brand, title) if part)
+        source = (item.get("source_url") or "").strip()
+        link = ""
+        if source.startswith("https://") or source.startswith("http://"):
+            link = f'<p class="cite-source">Nguồn: <a href="{esc(source)}">{esc(source)}</a></p>'
+        blocks.append(
+            '<article class="citation">'
+            f'<p class="cite-title">{esc(heading)}</p>'
+            f'<blockquote>{esc(item.get("text") or "")}</blockquote>'
+            f'{link}</article>'
+        )
+    return "".join(blocks)
+
+
 def assistant_advice_markup(spoken):
     """Attach each model explanation to its matching product card."""
+    if spoken.get("tool") == "search_documents" or spoken.get("passages"):
+        return warranty_markup(spoken)
     import agent
 
     prose, chips = peel_brand_chips(spoken.get("text") or "")
@@ -3956,7 +4126,10 @@ def assistant_advice_markup(spoken):
         elif re.search(r"^Còn \d+ máy", copy.get("reason") or ""):
             copy["reason"] = ""
         shown.append(copy)
-    cards = advice_cards(shown) if shown else ""
+    if spoken.get("tool") == "compare_products" and len(shown) >= 2:
+        cards = chat_compare_markup(shown)
+    else:
+        cards = advice_cards(shown) if shown else ""
     note = f'<p class="chat-lead">{esc(intro)}</p>' if intro else ""
     body = note + cards + chips
     return body or '<p class="note">Mình chưa có câu trả lời.</p>'
@@ -4008,17 +4181,31 @@ def assistant_checkout_form(payload, values=None, error=""):
 
 
 def assistant_receipt(order, invoice_note=""):
+    """The confirmation the shopper sees in the chat. Same facts as the invoice email, no bank code."""
     slot = dict(DELIVER_SLOTS).get(order["deliver_slot"], order["deliver_slot"])
-    pay = "khi nhận hàng" if (order.get("pay_method") or "cod") != "qr" else "chuyển khoản trên máy"
+    pay = "Thanh toán khi nhận hàng" if (order.get("pay_method") or "cod") != "qr" else "Chuyển khoản trên máy này"
     note = invoice_note or invoice.invoice_status_note(None, "")
-    color = f" màu {esc(order['color_name'])}" if order.get("color_name") else ""
+    color = f" màu {order['color_name']}" if order.get("color_name") else ""
+    title = display_name(order["name"]) + color
     return (
-        f'<article class="advice-card"><p>Đã đặt đơn #{order["order_id"]}: '
-        f'{esc(display_name(order["name"]))}{color}, × {order["qty"]}, '
-        f'{esc(money(order["total"]))}. Nhận {esc(order["deliver_on"])} · {esc(slot)}. '
-        f'Thanh toán {pay}. Còn {order["stock_left"]} máy.</p>'
+        '<article class="chat-invoice">'
+        '<header><p>Octopus Store</p>'
+        f'<h3>Hoá đơn đơn hàng #{int(order["order_id"])}</h3></header>'
+        '<p>Phiếu tham chiếu. Chưa trừ tiền thật.</p>'
+        '<dl>'
+        f'<div><dt>Nhận hàng</dt><dd>{esc(order.get("deliver_on") or "")} · {esc(slot)}</dd></div>'
+        f'<div><dt>Thanh toán</dt><dd>{esc(pay)}</dd></div>'
+        f'<div><dt>Người nhận</dt><dd>{esc(order.get("ship_name") or "")}</dd></div>'
+        f'<div><dt>Điện thoại</dt><dd>{esc(order.get("ship_phone") or "")}</dd></div>'
+        f'<div><dt>Địa chỉ</dt><dd>{esc(order.get("ship_address") or "")}</dd></div>'
+        '</dl>'
+        '<table><thead><tr><th>Sản phẩm</th><th>Số lượng</th><th>Thành tiền</th></tr></thead>'
+        f'<tbody><tr><td>{esc(title)}</td><td>× {int(order.get("qty") or 0)}</td>'
+        f'<td>{esc(money(order.get("total")))}</td></tr></tbody></table>'
+        f'<p class="invoice-total"><span>Tổng</span><strong>{esc(money(order.get("total")))}</strong></p>'
         f'<p class="note">{esc(note)}</p>'
-        f'<p><a class="buy" href="/orders/{order["order_id"]}">Xem phiếu</a></p></article>'
+        f'<p><a class="buy" href="/orders/{int(order["order_id"])}">Xem phiếu</a></p>'
+        '</article>'
     )
 
 
@@ -4095,6 +4282,13 @@ class Handler(BaseHTTPRequestHandler):
                     if not user:
                         return self.redirect("/login")
                     return self.send_html(render_orders(conn, user))
+                if path.startswith("/orders/") and path.endswith("/pay-qr"):
+                    if not user:
+                        return self.redirect("/login")
+                    ident = path[len("/orders/"):-len("/pay-qr")].strip("/")
+                    if not ident.isdigit():
+                        return self.send_html(self.missing(), 404)
+                    return self.send_pay_qr(conn, user, int(ident))
                 if path.startswith("/orders/") and path[len("/orders/"):].isdigit():
                     if not user:
                         return self.redirect("/login")
@@ -4237,7 +4431,8 @@ class Handler(BaseHTTPRequestHandler):
                 if path == "/admin/assistant":
                     if not user or user["role"] != "admin":
                         return self.redirect("/login")
-                    return self.send_html(render_admin_assistant())
+                    messages = load_chat(conn, user["id"], admin_chat_token(user), 40)
+                    return self.send_html(render_admin_assistant(messages))
                 if path == "/admin/profile":
                     if not user or user["role"] != "admin":
                         return self.redirect("/login")
@@ -4335,6 +4530,17 @@ class Handler(BaseHTTPRequestHandler):
                     page, _status = render_product(conn, sum(qty for _, qty in bag), int(ident), error)
                     return self.send_html(page, 400)
                 return self.redirect(f"/p/{ident}?review=1")
+            if path.startswith("/orders/") and path.endswith("/pay-check"):
+                if not user:
+                    return self.redirect("/login")
+                ident = path[len("/orders/"):-len("/pay-check")].strip("/")
+                if not ident.isdigit():
+                    return self.send_html(self.missing(), 404)
+                note, status = self.settle_transfer(conn, user, int(ident))
+                page = render_receipt(conn, user, int(ident), note)
+                if page is None:
+                    return self.send_html(self.missing(), 404)
+                return self.send_html(page, status)
             if path == "/checkout":
                 return self.handle_checkout(conn, user, bag, fields)
             if path == "/tro-ly":
@@ -4342,11 +4548,20 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/admin/assistant":
                 if not user or user["role"] != "admin":
                     return self.redirect("/login")
+                token = admin_chat_token(user)
+                if (fields.get("action") or [""])[0] == "clear":
+                    clear_chat(conn, user["id"], token)
+                    return self.send_html(render_admin_assistant())
                 question = (fields.get("q") or [""])[0].strip()
+                messages = load_chat(conn, user["id"], token, 40)
                 if not question:
-                    return self.send_html(render_admin_assistant("", "", "Nhập một câu hỏi."), 400)
-                answer, note = ask_assistant(conn, question)
-                return self.send_html(render_admin_assistant(question, answer, note))
+                    return self.send_html(render_admin_assistant(messages, "Nhập một câu hỏi."), 400)
+                history = messages[-8:]
+                answer, note = ask_assistant(conn, question, history)
+                save_chat(conn, user["id"], token, "user", question)
+                save_chat(conn, user["id"], token, "bot", answer)
+                messages = load_chat(conn, user["id"], token, 40)
+                return self.send_html(render_admin_assistant(messages, note))
             if path == "/admin/profile":
                 if not user or user["role"] != "admin":
                     return self.redirect("/login")
@@ -4798,6 +5013,43 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
+
+    def send_pay_qr(self, conn, user, order_id):
+        order = payment.load_payable(conn, order_id)
+        if not order or (order["user_id"] != user["id"] and user.get("role") != "admin"):
+            return self.send_html(self.missing(), 404)
+        if order["pay_method"] != "qr" or order["paid_at"] or not payment.bank_ready():
+            return self.send_error(404)
+        try:
+            data = payment.fetch_vietqr(order["total"], payment.transfer_reference(order_id))
+        except RuntimeError:
+            return self.send_text("Chưa lấy được mã chuyển khoản.", 502)
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        try:
+            self.wfile.write(data)
+        except BrokenPipeError:
+            return
+
+    def settle_transfer(self, conn, user, order_id):
+        order = payment.load_payable(conn, order_id)
+        if not order or (order["user_id"] != user["id"] and user.get("role") != "admin"):
+            return "Không thấy đơn.", 404
+        if order["pay_method"] != "qr":
+            return "Đơn này trả khi nhận hàng.", 400
+        if order["paid_at"]:
+            return payment.paid_note(order), 200
+        try:
+            rows = payment.recent_credits()
+        except RuntimeError as exc:
+            return str(exc), 400
+        hit = payment.match_credit(rows, payment.transfer_reference(order_id), order["total"])
+        if not hit:
+            return "Chưa thấy chuyển khoản khớp mã và số tiền.", 400
+        return payment.mark_paid(conn, order, hit), 200
 
     def send_html(self, page, status=200):
         data = page.encode("utf-8")

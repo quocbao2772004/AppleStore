@@ -53,6 +53,10 @@ class InvoiceSendTests(unittest.TestCase):
         self.assertIn("Chưa cấu hình", note)
         smtp.assert_not_called()
 
+    def test_spaced_app_password_is_joined(self):
+        with patch.dict("os.environ", {"SMTP_PASSWORD": "ab cd ef gh"}, clear=False):
+            self.assertEqual(invoice.smtp_password(), "abcdefgh")
+
     def test_configured_mailbox_logs_in_and_sends_html(self):
         env = {
             "SMTP_HOST": "smtp.example.test",

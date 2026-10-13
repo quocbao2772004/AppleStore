@@ -1,21 +1,21 @@
 # Octopus Store
 
-Octopus Store is a Vietnamese storefront for phones, laptops, headphones, tablets, and smartwatches. Prices come from a scrape of [Thế Giới Di Động](https://www.thegioididong.com/) and the storefront shows them as Hà Nội reference prices. Checkout saves the order and does not charge a card.
+Octopus Store is a Vietnamese storefront for phones, laptops, headphones, tablets, and smartwatches. Prices come from a scrape of [Thế Giới Di Động](https://www.thegioididong.com/) and the storefront shows them as Hà Nội reference prices.
 
-The customer assistant is a tool loop. The model chooses a tool, Python runs it against PostgreSQL, and the model writes the reply. An admin can open a trace of that loop.
+The customer assistant and the admin assistant are each one LangGraph. Python runs a single read-only tool, then the model writes the reply. Checkout saves the order through `place_shop_order`. The invoice says the money has not been taken. A transfer receipt can show a VietQR. A later đối soát marks the order paid only after a matching credit, then sends a confirmation email. Cash on delivery does not call the bank.
 
-This branch is version 2. Version 1, Apple Store Online, is compared in [`VERSIONS.md`](VERSIONS.md). A public demo of this version runs on AWS at https://octopus-store.solanai.us/. That host does not update itself when this branch changes.
+This branch is version 2. Version 1, Apple Store Online, is compared in [`VERSIONS.md`](VERSIONS.md). A public demo of this version runs on AWS at https://octopus-store.solanai.us/. That host does not update itself when this branch changes, and the copy there still has the older checkout.
 
 ## System flow
 
-One Python process renders the pages and runs the customer assistant. PostgreSQL holds the catalog and the orders. Qdrant holds warranty passages. RabbitMQ only carries new documents to the embedding worker. The offline eval does not call the model, the graph, or Qdrant.
+One Python process renders the pages and runs both assistants. PostgreSQL holds the catalog and the orders. Qdrant holds warranty passages. RabbitMQ only carries new documents to the embedding worker. The offline eval does not call the model, either graph, or Qdrant.
 
 ```mermaid
 flowchart TD
   shopper["Shopper browser"]
   pages["server.py renders HTML"]
   chat["POST /tro-ly"]
-  graph["LangGraph in agent/graph.py"]
+  shop["LangGraph in agent/graph.py"]
   intent["intent: understand_turn"]
   guards["Python guards"]
   tool["tool node"]
@@ -25,7 +25,7 @@ flowchart TD
   reply["Reply and cards"]
 
   shopper --> pages
-  shopper --> chat --> graph --> intent --> guards
+  shopper --> chat --> shop --> intent --> guards
   guards -->|"ask, refuse, or no tool"| explain
   guards -->|"catalog, stock, orders, or warranty"| tool
   tool --> pg
@@ -34,9 +34,26 @@ flowchart TD
   explain --> reply --> shopper
 ```
 
-`understand_turn` asks the provider for one JSON object: the current requirements and the next action. Python then applies the shop rules. A vague wish asks for a budget before any search. Free-text “muốn mua” does not open checkout. A named model stays on that model. A warranty question does not borrow another brand’s terms.
+`understand_turn` asks the provider for one JSON object: the current requirements and the next action. Python then applies the shop rules. A vague wish asks for a budget before any search. A named model is searched at once. Free-text “muốn mua” does not open checkout. A warranty question does not borrow another brand’s terms.
 
-If the action is `ask`, `refuse`, or empty, the graph skips the tool and goes to `explain`. Otherwise `tool` runs exactly one of `search_products`, `get_product`, `compare_products`, `check_inventory`, `list_orders`, or `search_documents`. Catalog cards stay in the order `search_products` ranked. `explain` writes the sentence. It does not pick a different product list.
+If the action is `ask`, `refuse`, or empty, the graph skips the tool and goes to `explain`. Otherwise `tool` runs exactly one of `search_products`, `list_category`, `get_product`, `compare_products`, `check_inventory`, `list_orders`, or `search_documents`. `list_category` is the overview of one category when the shopper names no brand and no budget. Catalog cards stay in the order `search_products` ranked. `explain` writes the sentence. It does not pick a different product list.
+
+```mermaid
+flowchart TD
+  admin["Admin /admin/assistant"]
+  adminGraph["LangGraph in admin_agent/graph.py"]
+  intent["intent"]
+  guards["Python guards"]
+  report["one read-only report"]
+  explain["explain"]
+  none["no tool"]
+
+  admin --> adminGraph --> intent --> guards
+  guards -->|"delete, edit, or place an order"| none --> explain
+  guards -->|"summary, sales, inventory, orders, or queue"| report --> explain
+```
+
+The admin graph is the same shape: intent, one report or none, then explain. Reports are `store_summary`, `sales_report`, `inventory_report`, `order_report`, and `work_queue`. A write request selects no tool and answers that the assistant only reads store figures. Cancelled orders stay out of revenue. The model sees the last eight messages. “Cuộc mới” clears that admin thread.
 
 ```mermaid
 flowchart LR
@@ -58,66 +75,88 @@ flowchart LR
   form["Name, email, phone, address, receive slot"]
   fn["place_shop_order"]
   db[("PostgreSQL")]
-  mail["Invoice email, if SMTP is set"]
+  invoice["Invoice email"]
+  qr["Receipt"]
+  check["Đối soát chuyển khoản"]
+  confirm["Confirmation email"]
 
   card --> form --> fn --> db
-  fn --> mail
+  fn --> invoice
+  fn --> qr --> check --> confirm
 ```
 
-The card button opens the form. The form is the only writer. `place_shop_order` changes stock and inserts the order in one statement. A trigger rejects stock below zero and then nothing is inserted. Pay on the form is “Thanh toán khi nhận hàng” or “Chuyển khoản, xem mã trên máy”. Neither one moves money. The earliest receive slot is tomorrow, inside 14 days: morning 8–12, afternoon 13–17, evening 18–21.
+The card button opens the form. The form is the only writer. `place_shop_order` changes stock and inserts the order in one statement. A trigger rejects stock below zero and then nothing is inserted. Pay on the form is “Thanh toán khi nhận hàng” or “Chuyển khoản, xem mã trên máy”. The invoice still says “Chưa trừ tiền thật.” After the form is submitted, the assistant posts that same order back in the chat as an invoice. A cash order has no payment code on that card. The earliest receive slot is tomorrow, inside 14 days: morning 8–12, afternoon 13–17, evening 18–21.
+
+On a transfer receipt, `BANK_ACCOUNT` and `BANK_ACCOUNT_NAME` build a VietQR whose transfer content is `OCTO` plus the order id. The amount is the order total. “Đối soát chuyển khoản” reads the last day of MB credits and marks the order paid when the description contains that reference and the credited amount matches. The confirmation subject is “Đã nhận chuyển khoản đơn #{id}”. `paid_at` is set even when that mail fails. Cash on delivery skips the bank. With the account values unset, the receipt shows a local mark in place of the VietQR. A live statement match has not been confirmed from this environment.
 
 ```mermaid
 flowchart LR
   cases["eval/client and eval/admin"]
-  route["route regex"]
+  route["offline router"]
   score["Scores on disk"]
 
   cases --> route --> score
 ```
 
-`route()` is that offline path. Live chat does not call it.
+Customer eval calls `route()`. Admin eval calls `local_calls`. Live chat does not call either router.
 
-## A traced customer turn
+## The store
 
-This trace is one live admin question: “Gợi ý laptop để học AI, tầm 25 triệu, ưu tiên RAM và pin.” The turn took 7.62 seconds. The model called `search_products`, Python filled the empty arguments and returned three in-stock laptops, and the model wrote the reply from that list. No order was placed.
+The home hero and the animated robot button. The button opens Trợ lý AI.
 
-![Trace timeline. The tool call is selected. Python kept the 25 million target and filled the laptop study slots.](docs/tracing-timeline.png)
+![Home. The gold octopus sits on the black hero, and the robot button is labeled Trợ lý AI.](docs/store-home.jpg)
 
-The same turn, with the final model call selected. The output is the text the shop shows.
+A category page shows a short reason row when no brand is selected and the search box is empty. The assistant opens over that page.
 
-![Final generation. The model writes the customer reply from the tool result.](docs/tracing-answer.png)
+![The phone category. The reason row sits above the catalog, and the assistant is open.](docs/store-assistant.jpg)
 
-One question is one trace. Inside it:
+Bảo asks “t muốn mua iphone 16”. The assistant shows that model, the list price 24.990.000đ, and 181 in stock. The thread does not ask for a budget and does not open checkout. “Đặt giúp tôi” on the card is what opens the form.
 
-| Observation | What it is |
-| --- | --- |
-| `SPAN` | The provider interpreted the question and recent chat, then Python selected the tool arguments. |
-| `GENERATION` | The model wrote the customer-facing explanation. The bar is the measured latency. |
-| `TOOL` | Python ran the tool selected from the provider's structured result. The detail pane shows the arguments used. |
+![The assistant shows one iPhone 16 card after “t muốn mua iphone 16”.](docs/assistant-iphone.jpg)
 
-The page keeps the current admin session only: at most 12 traces, in memory, cleared with the chat. It does not store a phone number, address, email, or the API key. It refreshes when a new turn is stored, and **Reload** forces a refresh. Guests are sent to login. A customer account gets “Chỉ quản trị xem được trang này.” The page is `/admin/tracing`. The old paths `/trace` and `/tracing` redirect there. If the provider is unavailable, chat reports that it cannot connect.
+The product page for that card. The line under the buttons is “Giá tham chiếu, chưa gồm phí.”
+
+![The iPhone 16 product page, with the Hà Nội reference price and 181 machines in stock.](docs/store-product.jpg)
+
+Bảo asks “So sánh iPhone 16 và iPhone 16 Plus”. Two or more machines become one table. Rows that differ are marked. Search replies stay cards.
+
+![The assistant compares iPhone 16 and iPhone 16 Plus in one table.](docs/assistant-compare.jpg)
+
+A warranty question quotes only the passages that were retrieved: the brand, the document title, the passage, and the source link. The reply does not borrow another brand’s terms.
+
+![The assistant quotes the retrieved Apple warranty passage and links the source.](docs/assistant-warranty.jpg)
+
+“Đặt giúp tôi” opens the delivery form. The order is not written until this form is submitted. The shot is cash on delivery, with the receive slot set to the next morning.
+
+![The delivery form in the assistant, filled in before the order is sent.](docs/assistant-checkout.jpg)
+
+After the form is submitted, the assistant posts the order back in the thread as an invoice. This one is order #114, cash on delivery, and it still says “Chưa trừ tiền thật.” The card has no bank code.
+
+![The assistant posts order #114 back in the chat as an invoice.](docs/assistant-invoice.jpg)
 
 ## What the shopper sees
 
-The shopper asks in the assistant. The reply is a short recommendation and product cards. Each card has a photo, the specs, the price, the stock, and a button that starts an order in the same thread.
+The shopper asks in the assistant. A named model is searched immediately. A vague wish asks one budget question first. A comparison of two or more machines is a table. A warranty answer is the retrieved passages, each with its title and source link. Other replies are a short sentence and product cards. Each card has a photo, the specs, the price, the stock, and “Đặt giúp tôi”.
 
-![Bảo asks for a study laptop around 25 million. The assistant recommends the Asus TUF Gaming and explains the GPU, RAM, and battery.](docs/assistant-advice.png)
+The order is written only after the shopper submits the delivery form. The assistant then shows the order as an invoice in the thread. Both pay methods save the order the same way. The transfer content the shopper copies is `OCTO` plus the order id. Prices on the cards are Hà Nội reference prices.
 
-The order is written only after the shopper submits the delivery form. Payment is simulated. This confirmation is order 11, placed from that recommendation: one Asus TUF Gaming, delivered on the afternoon of 1 October 2026, cash on delivery.
+## Tracing
 
-![The assistant confirms order 11 in the chat, with the receipt link and a note that no money was charged.](docs/assistant-order.png)
+`/admin/tracing` shows turns from the signed-in admin’s own session: at most 12 traces, kept in memory, cleared with that chat. A span is the question, the chosen tool, the tool result, and the explanation. The page does not store a phone number, address, email, or the API key. It refreshes when a new turn is stored, and **Reload** forces a refresh. Guests are sent to login. A customer account sees “Chỉ quản trị xem được trang này.” The old paths `/trace` and `/tracing` redirect to `/admin/tracing`. The model name is `OPENAI_MODEL`.
 
-## Live loop
+A customer turn is stored on the token that asked it. Opening the admin page with a different login does not show that customer’s thread.
+
+## Live customer loop
 
 The live customer assistant is one LangGraph in `backend/agent/graph.py`, pinned to `langgraph==0.6.11` so it imports on Python 3.9. The provider infers intent and current requirements as structured data, then the graph runs one tool and explains.
 
-The three nodes are `intent`, `tool`, and `explain`, compiled once at import. `search_products` still applies SQL hard filters and ranks the cards. The model writes the catalog prose and does not pick a different list. A warranty reply quotes the passages from Qdrant. `route()` and the regex slot parser remain for offline evaluation; customer chat does not call them. When the provider is unavailable, chat shows an error instead of guessing from those rules.
+The three nodes are `intent`, `tool`, and `explain`, compiled once at import. `search_products` still applies SQL hard filters and ranks the cards. The model writes the catalog prose and does not pick a different list. A warranty reply shows the retrieved passages, with the brand, the title, and the source URL. The instruction that limits the model to those passages stays off the shopper’s screen. `route()` and the regex slot parser remain for offline evaluation. Customer chat does not call them. With no API key, `answer_with_openai` returns nothing and the shopper sees an error. The shop does not guess that turn from the offline rules.
 
 Saving an order calls the Postgres function `place_shop_order`. The stock change and the order rows are one statement. A trigger on `products.stock` rejects a write below zero, and that rejection inserts nothing.
 
 ## What Python still decides
 
-The model interprets the request and proposes an action. Python keeps the catalog numbers and shop rules: broad consultations ask for a budget before searching, and chat text cannot open checkout.
+The model interprets the request and proposes an action. Python keeps the catalog numbers and shop rules. A broad consultation asks for a budget before searching. Chat text cannot open checkout.
 
 | Responsibility | Where |
 | --- | --- |
@@ -126,6 +165,7 @@ The model interprets the request and proposes an action. Python keeps the catalo
 | Checkout form, only after the customer presses a product card's “Đặt giúp tôi” button | `backend/server.py` |
 | Warranty and policy text. The question and the documents use the same embedding model | `backend/rag/` |
 | Save the order as one database function, then send the invoice | `place_shop_order`, `backend/invoice.py` |
+| VietQR, đối soát, and the payment confirmation | `backend/payment.py` |
 
 A follow-up that asks for the cheapest option, and does not name a new price, drops the previous budget. For study laptops, that list is the cheapest in-stock machines that still have a discrete GPU or at least 32 GB of RAM. A stated “around X million” budget caps the recommendation cards at X million; an explicit “under X million” cap is exclusive. Run `.venv/bin/python backend/mock.py` for catalog regression cases or add `--live` to check the configured provider with the same conversations.
 
@@ -134,6 +174,7 @@ A product card shows the photo, specs, price, and stock, then a short explanatio
 | Tool | When |
 | --- | --- |
 | `search_products` | Search and recommend. The shop shows at most four cards. Eval also scores cutoffs of 10 and 20. |
+| `list_category` | What the shop carries in one category, with no brand and no budget. |
 | `get_product` | The customer names one product or one configuration. |
 | `compare_products` | Compare two products. Figures come from the catalog. |
 | `check_inventory` | How many units are in stock. |
@@ -142,7 +183,7 @@ A product card shows the photo, specs, price, and stock, then a short explanatio
 | `search_documents` | Warranty, returns, delivery, and brand terms. This does not return a price or a stock count. |
 | refusal | Delete, edit the database, read someone else’s order, or skip the instructions. This is not a model tool. |
 
-An order is written only after the customer submits name, email, phone, address, delivery date, and delivery window. Windows are morning 8–12, afternoon 13–17, and evening 18–21. The earliest day is tomorrow, and the latest is 14 days out. A failed SMTP send keeps the order. The code on the receipt is the order id, not a bank QR.
+An order is written only after the customer submits name, email, phone, address, delivery date, and delivery window. Windows are morning 8–12, afternoon 13–17, and evening 18–21. The earliest day is tomorrow, and the latest is 14 days out. A failed SMTP send keeps the order. The invoice says “Chưa trừ tiền thật.” A transfer is marked paid only after đối soát finds a matching credit.
 
 ## Warranty documents
 
@@ -157,13 +198,15 @@ The seed command queues the warranty extracts that were actually readable: Samsu
 .venv/bin/python backend/rag/seed.py
 ```
 
-Qdrant listens on `127.0.0.1:6333` and RabbitMQ on `127.0.0.1:5672`. Where Docker is available, `docker compose -f deploy/local/docker-compose.yml up -d` starts both. The offline eval does not call Qdrant, and its scores are unchanged.
+Qdrant listens on `127.0.0.1:6333` and RabbitMQ on `127.0.0.1:5672`. Where Docker is available, `docker compose -f deploy/local/docker-compose.yml up -d` starts both. The offline eval does not call Qdrant, and its scores are unchanged by that index.
 
 ## Admin assistant
 
-`backend/admin_agent/` is a separate package. `route.py` is the offline router. `reports.py` is read-only: summary, sales, inventory, orders, and the review queue. `answer.py` is the model loop. The admin eval does not call the model. There is no write tool. Cancelled orders are excluded from revenue.
+`backend/admin_agent/` is a separate package. Live chat is the compiled graph in `graph.py`. `route.py` is the offline router `local_calls`, and it is also the fallback when no API key is set. That fallback answers from the reports and adds “Đang trả lời từ số liệu trong máy.” `reports.py` is the only source of the numbers: summary, sales, inventory, orders, and the review queue. There is no write tool. Cancelled orders are excluded from revenue.
 
-The two assistants are not one score. The customer eval measures product help. The admin eval measures store reports.
+Sales take a period of `today`, `7d`, `30d`, or `all`, and a category of phone, laptop, tablet, headphones, or smartwatch. A follow-up such as “thế còn laptop” keeps the period already in the thread. “Đơn đó” reads the newest order id already shown. A follow-up about stock uses the product name already shown.
+
+The two assistants are not one score. The customer eval measures product help. The admin eval measures the offline router, not the live graph. On that router, prompts that ask to delete or edit data fall through to a read, so the safety task score stays 0. The live graph refuses those prompts and calls no report. That difference is left in the score so a later offline run can be compared. None of those prompts write to the database.
 
 ## Offline evaluation
 
@@ -174,7 +217,7 @@ The two assistants are not one score. The customer eval measures product help. T
 
 Each command writes a report in its own directory. Neither calls the API, calls `place_order`, nor changes stock. `eval/client/baseline/` is the run from before the slot reader was fixed. A new run does not overwrite it. The middle column has no separate file. Those numbers live in [`eval/client/README.md`](eval/client/README.md).
 
-Same 500 customer cases:
+The three columns below are earlier published comparisons of the same 500 customer cases. They are not the file on disk now.
 
 | Metric | Baseline | After the slot fix | After the router |
 | --- | ---: | ---: | ---: |
@@ -190,20 +233,41 @@ Same 500 customer cases:
 | Task success | 50.2 | 59.8 | 87.2 |
 | Unauthorized | 0.0 | 0.0 | 0.0 |
 
-The router run also records Recall@10 **42.0**, Recall@20 **58.7**, Hit@10 **96.0**, and Hit@20 **96.0**, on 126 cases that have at least one correct product in the catalog.
+That router column also recorded Recall@10 42.0, Recall@20 58.7, Hit@10 96.0, and Hit@20 96.0.
 
-How to read the table:
+How to read the earlier table:
 
 - The baseline missed because slots were wrong and comparison, inventory, checkout, and refusal had no tool yet. Tool selection at 49.6 is that older tool set.
 - Intent drops in the middle column because `256GB` is no longer read as RAM, and `Pro` on an iPhone is no longer read as a MacBook line.
-- Hit@4 equals Hit@20. No case misses the top 4 and then hits inside the top 20. Recall@4 stays low because the labeled set averages 47.6 products while the shop shows 4 cards. Every card that is returned is in the labeled set. Precision@4 is 96.0 because five empty lists score 0.
-- The 64 cases that miss task success are catalog gaps: no MacBook M4, no iPhone 17 Pro 512GB, no iPhone 15 Plus, no iPhone 14, no Galaxy A55 or A56, and no discrete-GPU laptop under 20 million. Those cases still select the right tool.
-- Requirement satisfaction, 91.2, is scored only on study recommendations. Card order near the budget is preserved.
-- 87.2 is the offline router. The prose on the live chat is not part of that number. The trace above is that prose.
+- Hit@4 equals Hit@20 on that run. No case misses the top 4 and then hits inside the top 20.
+- Requirement satisfaction, 91.2, was scored only on study recommendations. Card order near the budget was preserved.
+- 87.2 is that offline router. The prose on the live chat was not part of that number.
 
-Task success by group on the router run: search 83.3, detail 65.0, comparison 91.7, recommendation 91.4, inventory 100, orders 100, checkout 100, safety 100.
+The current customer report is [`eval/client/report.md`](eval/client/report.md). Same 500 cases, still offline, still no model call. Mean search time is 8.4 ms.
 
-Admin eval, 84 cases:
+| Metric | Current report |
+| --- | ---: |
+| Intent | 99.8 |
+| Argument | 99.9 |
+| Exact argument match | 99.7 |
+| Tool selection | 100.0 |
+| Precision@4 | 97.6 |
+| Recall@4 | 26.5 |
+| MRR | 0.976 |
+| Hit@4 | 97.6 |
+| Recall@10 | 40.0 |
+| Recall@20 | 50.7 |
+| Hit@10 | 97.6 |
+| Hit@20 | 97.6 |
+| Requirement satisfaction | 72.1 |
+| Task success | 84.4 |
+| Unauthorized | 0.0 |
+
+Twenty queries have no matching machine, and all twenty return an empty list. Three queries have a match that misses the top 4.
+
+Task success by group on that report: product search 84.7, product detail 62.5, comparison 91.7, recommendation 71.4, inventory 100, order tracking 100, checkout 100, safety 100. Recommendation is the drop: 20 of 70 miss, and almost all of those misses are “MacBook … để code/học AI” searches that return no cards. One intent miss is “máy tính bảng để học”, read as product search while the tool stayed `search_products`. The `use` field is 99.5. Inventory, order tracking, checkout, and safety stay at 100.
+
+Admin eval, 84 cases, in [`eval/admin/report.md`](eval/admin/report.md). The router is `local_calls`.
 
 | Metric | Score |
 | --- | ---: |
@@ -214,7 +278,7 @@ Admin eval, 84 cases:
 | Task success | 81.0 |
 | Unauthorized | 0.0 |
 
-Summary, sales, and the review queue are 100. The rest is the router: `máy tính` is not yet read as laptop, `còn hàng không` is not yet an inventory check, `hết hàng và sắp hết` returns one report, and `đơn số 3` is not split into an id. Eight prompts that ask to delete or edit data fall through to a read, so that group’s task score is 0. Unauthorized actions stay at 0. None of those prompts write to the database.
+Summary, sales, and the review queue are 100. Inventory tool selection is 75. Orders are 86.7. The safety task score is 0 because delete and edit prompts fall through to a read on the offline router. Unauthorized actions stay at 0.
 
 Metric definitions are in [`eval/client/README.md`](eval/client/README.md) and [`eval/README.md`](eval/README.md).
 
@@ -222,44 +286,49 @@ Metric definitions are in [`eval/client/README.md`](eval/client/README.md) and [
 
 | Path | Role |
 | --- | --- |
-| [`backend/agent/graph.py`](backend/agent/graph.py) | Compiled LangGraph: intent, tool, explain |
+| [`backend/agent/graph.py`](backend/agent/graph.py) | Customer LangGraph: intent, one tool, explain |
 | [`backend/agent/prompts/`](backend/agent/prompts/) | Prompt text for understanding and explaining |
-| [`backend/agent/model.py`](backend/agent/model.py) | Provider calls used by the graph |
-| [`backend/agent/tools.py`](backend/agent/tools.py) | Runs the tool the model chose |
+| [`backend/agent/model.py`](backend/agent/model.py) | Provider calls used by the customer graph |
+| [`backend/agent/tools.py`](backend/agent/tools.py) | Runs the tool the graph chose |
 | [`backend/agent/retrieve.py`](backend/agent/retrieve.py) | SQL and ranking |
 | [`backend/agent/understand.py`](backend/agent/understand.py) | Provider interpretation and structured result validation |
 | [`backend/agent/slots.py`](backend/agent/slots.py) | Legacy offline evaluation parser; not used by live customer chat |
-| [`backend/agent/route.py`](backend/agent/route.py) | Offline evaluation router |
+| [`backend/agent/route.py`](backend/agent/route.py) | Offline customer router |
 | [`backend/agent/policy.py`](backend/agent/policy.py) | Offline gate. The live chat does not read this file |
-| [`backend/admin_agent/`](backend/admin_agent/) | Admin router and reports |
+| [`backend/admin_agent/graph.py`](backend/admin_agent/graph.py) | Admin LangGraph: intent, one report or none, explain |
+| [`backend/admin_agent/route.py`](backend/admin_agent/route.py) | Offline admin router, and the no-key fallback |
+| [`backend/admin_agent/reports.py`](backend/admin_agent/reports.py) | Read-only store figures |
 | [`backend/server.py`](backend/server.py) | Store pages, login, orders, tracing |
 | [`backend/rag/`](backend/rag/) | Document chunking, embeddings, Qdrant, and the RabbitMQ worker |
 | [`deploy/local/`](deploy/local/) | Compose file for local Qdrant and RabbitMQ |
 | [`backend/invoice.py`](backend/invoice.py) | HTML invoice over SMTP |
-| [`eval/client/`](eval/client/) | 500 customer cases and the baseline |
+| [`backend/payment.py`](backend/payment.py) | VietQR, bank match, and the payment confirmation |
+| [`eval/client/`](eval/client/) | 500 customer cases, the current report, and the baseline |
 | [`eval/admin/`](eval/admin/) | 84 admin cases |
 | [`frontend/`](frontend/) | CSS and JavaScript. Python renders the HTML |
 | [`database/schema.sql`](database/schema.sql) | Catalog tables |
 | [`api/suggest.py`](api/suggest.py) | Search-box suggestions |
 | [`scraper/`](scraper/) | Catalog crawl. It does not serve the shop |
-| [`docs/`](docs/) | Trace screenshots used above |
+| [`docs/`](docs/) | Store screenshots used above |
 | [`VERSIONS.md`](VERSIONS.md) | Version 1 compared with this store |
 | [`deploy/aws/`](deploy/aws/) | AWS demo: bootstrap and operator notes |
 
 ```bash
 .venv/bin/python backend/test_agent.py
 .venv/bin/python backend/test_invoice.py
+.venv/bin/python backend/test_payment.py
+.venv/bin/python backend/test_receipt.py
 ```
 
-Those two commands do not call the API and do not write an order.
+Those commands do not call the model API, the bank, or SMTP, and they do not place an order.
 
 ## Deployed on AWS
 
-The demo is https://octopus-store.solanai.us/. It is this same store, not a second codebase.
+The demo is https://octopus-store.solanai.us/. It is this same store, not a second codebase. The host does not pick up this payment flow or the admin graph until someone redeploys it.
 
 One EC2 `t4g.small` in `ap-southeast-1` runs Ubuntu 24.04. PostgreSQL 18 is on that machine. The app listens on `127.0.0.1:8765` under systemd. Caddy terminates HTTPS and proxies to that port. Cloudflare proxies the `octopus-store` name. The security group accepts TCP 80 and 443. Administration is AWS Systems Manager. SSH is not open. The EBS volume is encrypted.
 
-Catalog rows, product images, and the demo customer accounts were copied from the local machine. Local orders and sessions were not. Checkout on the site is still simulated. The model key lives on the instance, outside this repository. The deployed copy must be updated separately for local changes to take effect there.
+Catalog rows, product images, and the demo customer accounts were copied from the local machine. Local orders and sessions were not. Checkout on the site is still the older simulated checkout. The model key lives on the instance, outside this repository.
 
 The instance is on the AWS Free Plan. The site stops when that plan or its credit ends. The model API is a separate provider and is not covered by the AWS credit. Resource ids, the bootstrap script, and the operator commands are in [`deploy/aws/README.md`](deploy/aws/README.md).
 
@@ -296,18 +365,25 @@ SMTP_HOST=smtp.gmail.com
 SMTP_PORT=587
 SMTP_USER=
 SMTP_PASSWORD=
+BANK_ID=
+BANK_ACCOUNT=
+BANK_ACCOUNT_NAME=
+BANK_USERNAME=
+BANK_PASSWORD=
 ```
 
-`base_url` is any chat-completions endpoint. With `SMTP_USER` and `SMTP_PASSWORD` empty, the order is still saved and the receipt says the invoice was not sent. To restart, stop the process listening on port 8765 first.
+`base_url` is any chat-completions endpoint. With `SMTP_USER` and `SMTP_PASSWORD` empty, the order is still saved and the receipt says the invoice was not sent. A Gmail app password may be shown in groups of four; the store strips those spaces before SMTP login. An empty `BANK_ID` is treated as MB. `BANK_ACCOUNT` and `BANK_ACCOUNT_NAME` are what the VietQR needs. `BANK_USERNAME` and `BANK_PASSWORD` are read only when đối soát asks the bank. To restart, stop the process listening on port 8765 first.
 
 `server.py` creates the account, session, order, and chat tables on startup. Those tables are not fully described in `database/schema.sql`.
 
 ## Limits
 
 - The catalog is a scraped snapshot, not a live warehouse. A product that is not in the catalog is a missed task.
-- Live product search uses provider-interpreted requirements, SQL hard filters, and ranking. Warranty text is a separate Qdrant index. The offline suites do not call it.
-- 87.2 measures the offline router. The sentence in the chat is the model’s sentence, and `/admin/tracing` shows it.
-- The admin router has no refusal branch. The 81.0 score keeps that gap so a later run can be compared.
+- Live product search uses provider-interpreted requirements, SQL hard filters, and ranking. Warranty text is a separate Qdrant index. The offline suites do not call the model or that index.
+- 84.4 is the current offline customer router, in `eval/client/report.md`. The sentence in the chat is the model’s sentence. `/admin/tracing` shows the turns of the admin who is signed in.
+- The admin offline score is `local_calls`. The live admin graph refuses a delete or an edit. The safety task score of 0 keeps that offline gap.
+- A transfer receipt shows a VietQR when the account name and number are set. Đối soát matches `OCTO` plus the order id against the last day of credits. Cash on delivery does not call the bank. A live statement match has not been confirmed from this environment.
+- The public AWS host still serves the older checkout until it is redeployed.
 
 ## Data
 
